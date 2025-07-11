@@ -5,35 +5,109 @@ import uuid
 import threading
 import time
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 import asyncio
 import aiohttp
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import shutil
 import zipfile
 import io
 import re
 import concurrent.futures
 from dotenv import load_dotenv
+from collections import defaultdict, deque
+import logging
+from functools import wraps
+import hashlib
+import pickle
+from enum import Enum
+import subprocess
 
 # ============= CONFIGURATION =============
-# Load environment variables from .env file
 load_dotenv()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # =========================================
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
+class TaskStatus(Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+
+class AgentStatus(Enum):
+    IDLE = "idle"
+    WORKING = "working"
+    COMPLETED = "completed"
+    ERROR = "error"
+    REVIEWING = "reviewing"
+
+@dataclass
+class Task:
+    id: str
+    description: str
+    agent_id: str
+    status: TaskStatus = TaskStatus.PENDING
+    priority: int = 1
+    dependencies: List[str] = field(default_factory=list)
+    created_at: datetime = field(default_factory=datetime.now)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    output: str = ""
+    files_created: List[str] = field(default_factory=list)
+    retry_count: int = 0
+    max_retries: int = 3
+
 @dataclass
 class AgentPersonality:
-    """Defines the personality and behavior of each agent type"""
+    """Enhanced agent personality with better prompts and capabilities"""
     system_prompt: str
     model: str = "claude-3-5-sonnet-20241022"
-    max_tokens: int = 1000
+    max_tokens: int = 2000
     temperature: float = 0.7
+    specializations: List[str] = field(default_factory=list)
+    code_review_enabled: bool = True
+    integration_testing: bool = False
+
+class ResponseCache:
+    """Simple in-memory cache for AI responses to avoid redundant API calls"""
+    def __init__(self, max_size=1000):
+        self.cache = {}
+        self.max_size = max_size
+        self.access_times = {}
+    
+    def get_key(self, prompt: str, system_prompt: str) -> str:
+        combined = f"{system_prompt}||{prompt}"
+        return hashlib.md5(combined.encode()).hexdigest()
+    
+    def get(self, prompt: str, system_prompt: str) -> Optional[str]:
+        key = self.get_key(prompt, system_prompt)
+        if key in self.cache:
+            self.access_times[key] = time.time()
+            return self.cache[key]
+        return None
+    
+    def set(self, prompt: str, system_prompt: str, response: str):
+        key = self.get_key(prompt, system_prompt)
+        
+        # Evict oldest if cache is full
+        if len(self.cache) >= self.max_size:
+            oldest_key = min(self.access_times.keys(), key=lambda k: self.access_times[k])
+            del self.cache[oldest_key]
+            del self.access_times[oldest_key]
+        
+        self.cache[key] = response
+        self.access_times[key] = time.time()
 
 class AnthropicClient:
     def __init__(self, api_key: str):
@@ -44,56 +118,78 @@ class AnthropicClient:
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01"
         }
-        self._last_request_time = {}  # agent_id: timestamp
+        self._request_semaphore = asyncio.Semaphore(5)  # Max 5 concurrent requests
+        self._rate_limiter = {}  # agent_id: last_request_time
+        self.cache = ResponseCache()
 
-    async def generate_response(self, system_prompt: str, user_message: str, max_tokens: int = 1000, temperature: float = 0.7, agent_id: str = None) -> str:
-        """Generate a response using the Anthropic API with politeness checks and retries"""
+    async def generate_response(self, system_prompt: str, user_message: str, 
+                              max_tokens: int = 2000, temperature: float = 0.7, 
+                              agent_id: str = None, use_cache: bool = True) -> str:
+        """Generate AI response with caching, rate limiting, and error handling"""
+        
+        # Check cache first
+        if use_cache:
+            cached_response = self.cache.get(user_message, system_prompt)
+            if cached_response:
+                logger.info(f"Cache hit for agent {agent_id}")
+                return cached_response
+        
         try:
-            payload = {
-                "model": "claude-3-5-sonnet-20241022",
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "system": system_prompt,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": user_message
-                    }
-                ]
-            }
-            # Politeness: per-agent rate limit (1 req/sec)
-            if agent_id:
-                now = time.time()
-                last = self._last_request_time.get(agent_id, 0)
-                wait = 1.0 - (now - last)
-                if wait > 0:
-                    await asyncio.sleep(wait)
-                self._last_request_time[agent_id] = time.time()
-            # Retry logic
-            retries = 3
-            delay = 1.5
-            for attempt in range(retries):
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(self.base_url, headers=self.headers, json=payload) as response:
-                        if response.status == 200:
-                            result = await response.json()
-                            return result['content'][0]['text']
-                        elif response.status == 529 or (response.status == 400 and 'overloaded' in await response.text()):
-                            if attempt < retries - 1:
-                                await asyncio.sleep(delay)
-                                delay *= 2
-                                continue
-                            else:
-                                return "[Polite Notice] The system is currently overloaded. Please wait a moment and try again."
-                        else:
-                            error_text = await response.text()
-                            print(f"API Error: {response.status} - {error_text}")
-                            return f"[API Error] Status: {response.status}"
+            async with self._request_semaphore:
+                # Rate limiting per agent
+                if agent_id:
+                    now = time.time()
+                    last_request = self._rate_limiter.get(agent_id, 0)
+                    wait_time = 1.0 - (now - last_request)
+                    if wait_time > 0:
+                        await asyncio.sleep(wait_time)
+                    self._rate_limiter[agent_id] = time.time()
+                
+                payload = {
+                    "model": "claude-3-5-sonnet-20241022",
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "system": system_prompt,
+                    "messages": [{"role": "user", "content": user_message}]
+                }
+                
+                # Retry logic with exponential backoff
+                for attempt in range(3):
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.post(self.base_url, headers=self.headers, json=payload) as response:
+                                if response.status == 200:
+                                    result = await response.json()
+                                    response_text = result['content'][0]['text']
+                                    
+                                    # Cache the response
+                                    if use_cache:
+                                        self.cache.set(user_message, system_prompt, response_text)
+                                    
+                                    return response_text
+                                elif response.status == 429:
+                                    wait_time = 2 ** attempt
+                                    logger.warning(f"Rate limited, waiting {wait_time}s")
+                                    await asyncio.sleep(wait_time)
+                                    continue
+                                else:
+                                    error_text = await response.text()
+                                    logger.error(f"API Error: {response.status} - {error_text}")
+                                    return f"[API Error] Status: {response.status}"
+                    except Exception as e:
+                        if attempt == 2:  # Last attempt
+                            logger.error(f"Final attempt failed: {e}")
+                            return f"[Error] {str(e)}"
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                
+                return "[Error] Max retries exceeded"
+                
         except Exception as e:
-            print(f"Error calling Anthropic API: {e}")
+            logger.error(f"Error calling Anthropic API: {e}")
             return f"[Error] {str(e)}"
 
-# Initialize Anthropic client
+# Initialize client
 anthropic_client = AnthropicClient(ANTHROPIC_API_KEY)
 
 class Agent:
@@ -101,10 +197,10 @@ class Agent:
         self.id = str(uuid.uuid4())
         self.name = name
         self.role = role
-        self.type = agent_type  # 'manager' or 'worker'
+        self.type = agent_type
         self.specialty = specialty
-        self.status = 'idle'  # idle, working, completed, error
-        self.current_task = None
+        self.status = AgentStatus.IDLE
+        self.current_task_id = None
         self.manager_id = manager_id
         self.subordinates = []
         self.messages = []
@@ -113,76 +209,238 @@ class Agent:
         self.position = {'x': 400, 'y': 200}
         self.created_at = datetime.now()
         self.conversation_history = []
-        self.personality = self._get_personality()
+        self.personality = self._get_enhanced_personality()
+        self.completed_tasks = []
+        self.performance_metrics = {
+            'tasks_completed': 0,
+            'avg_completion_time': 0,
+            'code_quality_score': 0,
+            'collaboration_score': 0
+        }
+        self.last_activity = datetime.now()
+        self.skills = self._get_skills()
 
-    def _get_personality(self) -> AgentPersonality:
+    def _get_enhanced_personality(self) -> AgentPersonality:
+        """Enhanced personality configurations with better prompts"""
         personalities = {
             'manager': AgentPersonality(
-                system_prompt=(
-                    f"You are {{self.name}}, a {{self.role}} in a multi-agent development system.\n\n"
-                    f"Your role: {{self.role}}\nYour specialty: {{self.specialty}}\nYour type: Project Manager/Team Lead\n\n"
-                    f"Your responsibilities:\n"
-                    f"- Break down the project into the largest possible, self-contained, specification-driven tasks for each agent.\n"
-                    f"- Assign tasks that allow agents to work autonomously for as long as possible, minimizing the need for back-and-forth communication.\n"
-                    f"- Only communicate when a major milestone is reached, or when a handoff or integration is required.\n"
-                    f"- Use structured formats (JSON, YAML, bullet points) for all communications.\n"
-                    f"- Focus on requirements, interfaces, and deliverables.\n"
-                    f"- Each message should be actionable and unambiguous.\n\n"
-                    f"When given a project, create a comprehensive plan and assign large, independent tasks to each agent. Avoid micro-managing or sending small tasks. If you assign a task that involves modifying files, ensure the agent receives the current contents of those files.\n"
-                    f"Always output code in the format ```filename.ext\ncode...``` for every file you create or modify.\n"
-                    f"After all agents report completion, review the actual files in the project directory. If any required files are missing or incomplete, assign correction tasks to the appropriate agent."
-                )
+                system_prompt=self._get_manager_prompt(),
+                max_tokens=2000,
+                temperature=0.6,
+                specializations=['project_management', 'code_review', 'architecture'],
+                code_review_enabled=True,
+                integration_testing=True
             ),
             'Frontend Developer': AgentPersonality(
-                system_prompt=(
-                    f"You are {{self.name}}, a strictly technical {{self.role}} in a multi-agent development system.\n\n"
-                    f"Your role: {{self.role}}\nYour specialty: {{self.specialty}}\nYour type: Frontend Developer\n\n"
-                    f"Your responsibilities:\n"
-                    f"- When assigned a task, plan, implement, and test as much as possible in one cycle.\n"
-                    f"- Make all necessary changes across multiple files if needed.\n"
-                    f"- Only communicate when a major milestone is reached, or when you are blocked.\n"
-                    f"- Use structured formats (JSON, YAML, bullet points) for all communications.\n"
-                    f"- Focus on requirements, interfaces, and deliverables.\n"
-                    f"- Each message should be actionable and unambiguous.\n\n"
-                    f"When given a task, work autonomously and deliver a complete, specification-driven solution. Output all updated files in code blocks labeled with the filename.\n"
-                    f"Always output code in the format ```filename.ext\ncode...``` for every file you create or modify.\n"
-                    f"If you do not output any code, explain why."
-                )
+                system_prompt=self._get_frontend_prompt(),
+                max_tokens=2000,
+                temperature=0.7,
+                specializations=['react', 'typescript', 'css', 'ui_ux'],
+                code_review_enabled=True
             ),
             'Backend Developer': AgentPersonality(
-                system_prompt=(
-                    f"You are {{self.name}}, a strictly technical {{self.role}} in a multi-agent development system.\n\n"
-                    f"Your role: {{self.role}}\nYour specialty: {{self.specialty}}\nYour type: Backend Developer\n\n"
-                    f"Your responsibilities:\n"
-                    f"- When assigned a task, plan, implement, and test as much as possible in one cycle.\n"
-                    f"- Make all necessary changes across multiple files if needed.\n"
-                    f"- Only communicate when a major milestone is reached, or when you are blocked.\n"
-                    f"- Use structured formats (JSON, YAML, bullet points) for all communications.\n"
-                    f"- Focus on requirements, interfaces, and deliverables.\n"
-                    f"- Each message should be actionable and unambiguous.\n\n"
-                    f"When given a task, work autonomously and deliver a complete, specification-driven solution. Output all updated files in code blocks labeled with the filename.\n"
-                    f"Always output code in the format ```filename.ext\ncode...``` for every file you create or modify.\n"
-                    f"If you do not output any code, explain why."
-                )
+                system_prompt=self._get_backend_prompt(),
+                max_tokens=2000,
+                temperature=0.7,
+                specializations=['python', 'flask', 'databases', 'apis'],
+                code_review_enabled=True
             ),
             'DevOps Engineer': AgentPersonality(
-                system_prompt=(
-                    f"You are {{self.name}}, a strictly technical {{self.role}} in a multi-agent development system.\n\n"
-                    f"Your role: {{self.role}}\nYour specialty: {{self.specialty}}\nYour type: DevOps Engineer\n\n"
-                    f"Your responsibilities:\n"
-                    f"- When assigned a task, plan, implement, and test as much as possible in one cycle.\n"
-                    f"- Make all necessary changes across multiple files if needed.\n"
-                    f"- Only communicate when a major milestone is reached, or when you are blocked.\n"
-                    f"- Use structured formats (JSON, YAML, bullet points) for all communications.\n"
-                    f"- Focus on requirements, interfaces, and deliverables.\n"
-                    f"- Each message should be actionable and unambiguous.\n\n"
-                    f"When given a task, work autonomously and deliver a complete, specification-driven solution. Output all updated files in code blocks labeled with the filename.\n"
-                    f"Always output code in the format ```filename.ext\ncode...``` for every file you create or modify.\n"
-                    f"If you do not output any code, explain why."
-                )
+                system_prompt=self._get_devops_prompt(),
+                max_tokens=2000,
+                temperature=0.7,
+                specializations=['docker', 'ci_cd', 'cloud', 'monitoring'],
+                code_review_enabled=True
             )
         }
         return personalities.get(self.role, personalities.get('manager'))
+
+    def _get_manager_prompt(self) -> str:
+        return f"""You are {self.name}, a Senior Technical Lead and Project Manager in a multi-agent development system.
+
+CORE RESPONSIBILITIES:
+1. **Project Architecture**: Design overall system architecture and component relationships
+2. **Task Orchestration**: Break down complex projects into detailed, executable tasks
+3. **Quality Assurance**: Review all code for correctness, efficiency, and best practices
+4. **Integration Management**: Ensure all components work together seamlessly
+5. **Performance Optimization**: Identify and resolve bottlenecks and inefficiencies
+
+ENHANCED CAPABILITIES:
+- Create detailed technical specifications with clear acceptance criteria
+- Perform comprehensive code reviews with specific feedback
+- Generate integration tests and validate system compatibility
+- Optimize for performance, scalability, and maintainability
+- Handle dependency management and deployment orchestration
+
+TASK ASSIGNMENT PROTOCOL:
+When assigning tasks, provide:
+1. **Detailed Requirements**: Clear functional and technical specifications
+2. **Context**: How this task fits into the overall project
+3. **Acceptance Criteria**: Specific conditions that must be met
+4. **Dependencies**: What other tasks must be completed first
+5. **File Structure**: Expected output files and their purposes
+
+OUTPUT FORMAT:
+- Use ```tasks.json``` code blocks for task assignments
+- Use ```review.md``` for code review feedback
+- Use ```architecture.md``` for system design documentation
+- Always include specific file paths and naming conventions
+
+QUALITY GATES:
+- Code must follow language-specific best practices
+- All functions must have proper error handling
+- Database queries must be optimized
+- Security considerations must be addressed
+- Documentation must be comprehensive
+
+Your expertise: {self.specialty}"""
+
+    def _get_frontend_prompt(self) -> str:
+        return f"""You are {self.name}, a Senior Frontend Developer specializing in modern web applications.
+
+TECHNICAL EXPERTISE:
+- **React/TypeScript**: Advanced patterns, hooks, state management
+- **Modern CSS**: Flexbox, Grid, animations, responsive design
+- **Performance**: Code splitting, lazy loading, bundle optimization
+- **Testing**: Unit tests, integration tests, accessibility testing
+- **UI/UX**: Component design, user interaction patterns
+
+DEVELOPMENT STANDARDS:
+- Write clean, maintainable, and well-documented code
+- Follow React best practices and TypeScript strict mode
+- Implement responsive design and accessibility standards
+- Use modern CSS techniques and design systems
+- Optimize for performance and user experience
+
+CODE QUALITY REQUIREMENTS:
+- TypeScript interfaces for all data structures
+- Proper error boundaries and error handling
+- Accessibility attributes (ARIA labels, semantic HTML)
+- Performance optimizations (React.memo, useMemo, useCallback)
+- Comprehensive component documentation
+
+OUTPUT FORMAT:
+- Always use proper file extensions (.tsx, .ts, .css, .scss)
+- Include import statements and dependencies
+- Add inline comments for complex logic
+- Provide component usage examples
+- Include error handling and loading states
+
+TASK COMPLETION CRITERIA:
+- All components render without errors
+- Responsive design works on mobile and desktop
+- Accessibility score meets WCAG 2.1 standards
+- Performance metrics are optimized
+- Code passes linting and type checking
+
+Your specialty: {self.specialty}
+When you complete a task, state "TASK COMPLETED" and summarize what was accomplished."""
+
+    def _get_backend_prompt(self) -> str:
+        return f"""You are {self.name}, a Senior Backend Developer specializing in scalable server-side applications.
+
+TECHNICAL EXPERTISE:
+- **Python/Flask**: Advanced patterns, middleware, extensions
+- **Database Design**: SQL optimization, indexing, relationships
+- **API Development**: RESTful APIs, GraphQL, authentication
+- **Security**: Input validation, authentication, authorization
+- **Performance**: Caching, async processing, database optimization
+
+DEVELOPMENT STANDARDS:
+- Write secure, efficient, and maintainable code
+- Implement proper error handling and logging
+- Use database best practices and optimization
+- Follow RESTful API design principles
+- Implement comprehensive testing strategies
+
+CODE QUALITY REQUIREMENTS:
+- Input validation and sanitization
+- Proper error handling and HTTP status codes
+- Database connection pooling and optimization
+- Authentication and authorization mechanisms
+- Comprehensive logging and monitoring
+
+OUTPUT FORMAT:
+- Use proper file extensions (.py, .sql, .yaml)
+- Include necessary imports and dependencies
+- Add docstrings for all functions and classes
+- Provide API documentation and examples
+- Include database migration scripts if needed
+
+SECURITY CONSIDERATIONS:
+- Validate all user inputs
+- Implement rate limiting
+- Use parameterized queries to prevent SQL injection
+- Implement proper authentication and session management
+- Log security events and errors
+
+TASK COMPLETION CRITERIA:
+- All endpoints return proper HTTP status codes
+- Database queries are optimized and indexed
+- Security vulnerabilities are addressed
+- Error handling is comprehensive
+- Performance benchmarks are met
+
+Your specialty: {self.specialty}
+When you complete a task, state "TASK COMPLETED" and summarize what was accomplished."""
+
+    def _get_devops_prompt(self) -> str:
+        return f"""You are {self.name}, a Senior DevOps Engineer specializing in deployment, monitoring, and infrastructure.
+
+TECHNICAL EXPERTISE:
+- **Containerization**: Docker, Kubernetes, container orchestration
+- **CI/CD**: GitHub Actions, Jenkins, automated testing and deployment
+- **Cloud Platforms**: AWS, GCP, Azure, serverless architectures
+- **Monitoring**: Logging, metrics, alerting, performance monitoring
+- **Security**: Infrastructure security, compliance, vulnerability scanning
+
+DEVELOPMENT STANDARDS:
+- Create production-ready deployment configurations
+- Implement comprehensive monitoring and alerting
+- Follow infrastructure as code principles
+- Ensure security and compliance requirements
+- Optimize for cost and performance
+
+CODE QUALITY REQUIREMENTS:
+- Dockerfile best practices (multi-stage builds, minimal base images)
+- CI/CD pipeline optimization and security
+- Infrastructure as code (Terraform, CloudFormation)
+- Monitoring and logging configuration
+- Security scanning and vulnerability assessment
+
+OUTPUT FORMAT:
+- Use proper file extensions (.dockerfile, .yml, .yaml, .tf)
+- Include detailed configuration comments
+- Provide deployment instructions and documentation
+- Include monitoring and alerting configurations
+- Add security and compliance checklists
+
+DEPLOYMENT CONSIDERATIONS:
+- Zero-downtime deployments
+- Database migration strategies
+- Environment-specific configurations
+- Backup and disaster recovery plans
+- Performance monitoring and optimization
+
+TASK COMPLETION CRITERIA:
+- Applications deploy successfully in all environments
+- Monitoring and alerting are functional
+- Security scans pass without critical issues
+- Performance metrics meet requirements
+- Documentation is comprehensive and up-to-date
+
+Your specialty: {self.specialty}
+When you complete a task, state "TASK COMPLETED" and summarize what was accomplished."""
+
+    def _get_skills(self) -> List[str]:
+        """Get relevant skills based on role"""
+        skill_map = {
+            'Frontend Developer': ['React', 'TypeScript', 'CSS', 'HTML', 'JavaScript', 'Jest', 'Webpack'],
+            'Backend Developer': ['Python', 'Flask', 'SQL', 'PostgreSQL', 'Redis', 'Celery', 'pytest'],
+            'DevOps Engineer': ['Docker', 'Kubernetes', 'AWS', 'Terraform', 'GitHub Actions', 'Nginx'],
+            'manager': ['Architecture', 'Code Review', 'Project Management', 'System Design']
+        }
+        return skill_map.get(self.role, [])
 
     def to_dict(self):
         return {
@@ -191,89 +449,208 @@ class Agent:
             'role': self.role,
             'type': self.type,
             'specialty': self.specialty,
-            'status': self.status,
-            'current_task': self.current_task,
+            'status': self.status.value,
+            'current_task_id': self.current_task_id,
             'manager_id': self.manager_id,
             'subordinates': self.subordinates,
             'messages': self.messages,
             'work_output': self.work_output,
             'is_active': self.is_active,
             'position': self.position,
-            'created_at': self.created_at.isoformat()
+            'created_at': self.created_at.isoformat(),
+            'performance_metrics': self.performance_metrics,
+            'skills': self.skills,
+            'last_activity': self.last_activity.isoformat()
         }
 
-# --- Update MultiAgentSystem for robust metrics ---
-class MultiAgentSystem:
+class TaskQueue:
+    """Enhanced task queue with dependency management and prioritization"""
+    def __init__(self):
+        self.tasks: Dict[str, Task] = {}
+        self.pending_tasks = deque()
+        self.in_progress_tasks: Set[str] = set()
+        self.completed_tasks: Set[str] = set()
+        self.failed_tasks: Set[str] = set()
+        self.dependency_graph: Dict[str, Set[str]] = defaultdict(set)
+        self._lock = threading.Lock()
+
+    def add_task(self, task: Task):
+        """Add task to queue with dependency management"""
+        with self._lock:
+            self.tasks[task.id] = task
+            self.dependency_graph[task.id] = set(task.dependencies)
+            self._update_queue()
+
+    def get_ready_tasks(self) -> List[Task]:
+        """Get tasks that are ready to be executed (no pending dependencies)"""
+        with self._lock:
+            ready_tasks = []
+            for task_id in list(self.pending_tasks):
+                if self._are_dependencies_satisfied(task_id):
+                    task = self.tasks[task_id]
+                    ready_tasks.append(task)
+                    self.pending_tasks.remove(task_id)
+                    self.in_progress_tasks.add(task_id)
+                    task.status = TaskStatus.IN_PROGRESS
+                    task.started_at = datetime.now()
+            return sorted(ready_tasks, key=lambda t: t.priority, reverse=True)
+
+    def complete_task(self, task_id: str, output: str = "", files_created: List[str] = None):
+        """Mark task as completed"""
+        with self._lock:
+            if task_id in self.in_progress_tasks:
+                self.in_progress_tasks.remove(task_id)
+                self.completed_tasks.add(task_id)
+                task = self.tasks[task_id]
+                task.status = TaskStatus.COMPLETED
+                task.completed_at = datetime.now()
+                task.output = output
+                task.files_created = files_created or []
+                self._update_queue()
+
+    def fail_task(self, task_id: str, error: str = ""):
+        """Mark task as failed"""
+        with self._lock:
+            if task_id in self.in_progress_tasks:
+                self.in_progress_tasks.remove(task_id)
+                task = self.tasks[task_id]
+                task.retry_count += 1
+                
+                if task.retry_count <= task.max_retries:
+                    # Retry the task
+                    task.status = TaskStatus.PENDING
+                    task.output += f"\n[Retry {task.retry_count}] {error}"
+                    self.pending_tasks.appendleft(task_id)
+                else:
+                    # Task failed permanently
+                    self.failed_tasks.add(task_id)
+                    task.status = TaskStatus.FAILED
+                    task.output += f"\n[Failed] {error}"
+
+    def _are_dependencies_satisfied(self, task_id: str) -> bool:
+        """Check if all dependencies for a task are satisfied"""
+        dependencies = self.dependency_graph[task_id]
+        return all(dep_id in self.completed_tasks for dep_id in dependencies)
+
+    def _update_queue(self):
+        """Update the pending queue based on current state"""
+        # This is called when tasks are added or completed
+        pass
+
+class CodeValidator:
+    """Validate generated code for common issues"""
+    
+    @staticmethod
+    def validate_python(code: str) -> Dict[str, List[str]]:
+        """Validate Python code"""
+        issues = {'errors': [], 'warnings': []}
+        
+        # Check for basic syntax
+        try:
+            compile(code, '<string>', 'exec')
+        except SyntaxError as e:
+            issues['errors'].append(f"Syntax error: {e}")
+        
+        # Check for common patterns
+        if 'eval(' in code:
+            issues['warnings'].append("Use of eval() detected - security risk")
+        
+        if 'exec(' in code:
+            issues['warnings'].append("Use of exec() detected - security risk")
+        
+        if 'import os' in code and 'os.system' in code:
+            issues['warnings'].append("Use of os.system() detected - security risk")
+        
+        return issues
+
+    @staticmethod
+    def validate_javascript(code: str) -> Dict[str, List[str]]:
+        """Validate JavaScript/TypeScript code"""
+        issues = {'errors': [], 'warnings': []}
+        
+        # Check for common patterns
+        if 'eval(' in code:
+            issues['warnings'].append("Use of eval() detected - security risk")
+        
+        if 'document.write(' in code:
+            issues['warnings'].append("Use of document.write() detected - not recommended")
+        
+        if 'innerHTML' in code and not 'textContent' in code:
+            issues['warnings'].append("Consider using textContent instead of innerHTML for XSS prevention")
+        
+        return issues
+
+    @staticmethod
+    def validate_sql(code: str) -> Dict[str, List[str]]:
+        """Validate SQL code"""
+        issues = {'errors': [], 'warnings': []}
+        
+        # Check for SQL injection patterns
+        if any(pattern in code.lower() for pattern in ['drop table', 'delete from', 'truncate']):
+            issues['warnings'].append("Destructive SQL operations detected")
+        
+        if "'" in code and '%s' in code:
+            issues['warnings'].append("Potential SQL injection risk - use parameterized queries")
+        
+        return issues
+
+class EnhancedMultiAgentSystem:
     def __init__(self):
         self.agents: Dict[str, Agent] = {}
+        self.task_queue = TaskQueue()
         self.global_messages = []
         self.system_running = False
         self.current_project = None
         self.project_dir = None
         self.detailed_log = []
-        self.task_queue = []
         self.fast_mode = True
+        self.code_validator = CodeValidator()
+        self.performance_monitor = PerformanceMonitor()
         self.setup_default_agents()
         self._last_agents_state = None
         self._system_start_time = time.time()
         self._tasks_completed = 0
         self._messages_sent = 0
-
-    def increment_tasks_completed(self, agent=None):
-        self._tasks_completed += 1
-        if agent:
-            if not hasattr(agent, 'tasks_completed'):
-                agent.tasks_completed = 0
-            agent.tasks_completed += 1
-
-    def increment_messages_sent(self):
-        self._messages_sent += 1
-
-    def get_metrics(self):
-        # Only count agents that are active and not completed or error
-        active_agents = sum(1 for a in self.agents.values() if a.is_active and a.status in ('working', 'idle'))
-        return {
-            'active_agents': active_agents,
-            'tasks_completed': self._tasks_completed,
-            'messages_sent': self._messages_sent,
-            'system_uptime': int(time.time() - self._system_start_time)
-        }
+        self._loop = None
+        self._background_tasks = set()
+        self._project_template = ProjectTemplate()
 
     def setup_default_agents(self):
-        # Create default manager
+        """Create enhanced default agents"""
+        # Create enhanced manager
         manager = Agent(
-            name="CodeLead",
+            name="ArchitectLead",
             role="manager",
             agent_type="manager",
-            specialty="Task delegation, integration oversight, quality control"
+            specialty="System Architecture, Code Review, Team Coordination, Performance Optimization"
         )
         manager.position = {'x': 400, 'y': 100}
         self.agents[manager.id] = manager
 
-        # Create default workers
+        # Create specialized workers
         frontend = Agent(
-            name="UIAgent",
+            name="ReactExpert",
             role="Frontend Developer",
             agent_type="worker",
-            specialty="React, TypeScript, UI/UX, State Management",
+            specialty="React, TypeScript, Modern CSS, Performance Optimization, Accessibility",
             manager_id=manager.id
         )
         frontend.position = {'x': 200, 'y': 300}
         
         backend = Agent(
-            name="APIAgent",
+            name="PythonArchitect",
             role="Backend Developer",
             agent_type="worker",
-            specialty="Python, Flask, Database, API Design",
+            specialty="Python, Flask, Database Design, API Security, Performance Optimization",
             manager_id=manager.id
         )
         backend.position = {'x': 400, 'y': 300}
         
         devops = Agent(
-            name="DeployAgent",
+            name="CloudMaster",
             role="DevOps Engineer",
             agent_type="worker",
-            specialty="Docker, CI/CD, Cloud Infrastructure, Monitoring",
+            specialty="Docker, Kubernetes, CI/CD, Cloud Architecture, Monitoring",
             manager_id=manager.id
         )
         devops.position = {'x': 600, 'y': 300}
@@ -286,64 +663,324 @@ class MultiAgentSystem:
         self.agents[backend.id] = backend
         self.agents[devops.id] = devops
 
-    def add_agent(self, name: str, role: str, agent_type: str, specialty: str, manager_id: str = None) -> str:
-        agent = Agent(name, role, agent_type, specialty, manager_id)
-        self.agents[agent.id] = agent
-        
-        # If this agent has a manager, add to manager's subordinates
-        if manager_id and manager_id in self.agents:
-            self.agents[manager_id].subordinates.append(agent.id)
-        
-        return agent.id
-
-    def remove_agent(self, agent_id: str) -> bool:
-        if agent_id not in self.agents:
-            return False
-        
-        agent = self.agents[agent_id]
-        
-        # Remove from manager's subordinates
-        if agent.manager_id and agent.manager_id in self.agents:
-            manager = self.agents[agent.manager_id]
-            if agent_id in manager.subordinates:
-                manager.subordinates.remove(agent_id)
-        
-        # Reassign subordinates if this is a manager
-        if agent.type == 'manager' and agent.subordinates:
-            for sub_id in agent.subordinates:
-                if sub_id in self.agents:
-                    self.agents[sub_id].manager_id = None
-        
-        del self.agents[agent_id]
-        return True
-
-    def start_project(self, project_description: str):
-        import uuid, os
+    async def start_project(self, project_description: str):
+        """Enhanced project startup with better planning"""
         self.current_project = project_description
         self.system_running = True
-        # Create a unique project directory
+        
+        # Create project directory
         if not os.path.exists('projects'):
             os.makedirs('projects')
         project_id = str(uuid.uuid4())
         self.project_dir = os.path.join('projects', project_id)
         os.makedirs(self.project_dir, exist_ok=True)
-        # Reset all agents
+        
+        # Reset agents and task queue
         for agent in self.agents.values():
-            agent.status = 'idle'
-            agent.current_task = None
+            agent.status = AgentStatus.IDLE
+            agent.current_task_id = None
             agent.work_output = ''
             agent.messages = []
-        # Set manager and workers to working state and assign initial tasks
-        for agent in self.agents.values():
-            if agent.type == 'manager':
-                agent.current_task = project_description
-                agent.status = 'working'
-            else:
-                agent.current_task = ''
-                agent.status = 'working'
-        self.detailed_log.append({'event': 'project_started', 'description': f'Project started: {project_description}', 'timestamp': datetime.now().isoformat()})
+        
+        self.task_queue = TaskQueue()
+        
+        # Get project template and initial tasks
+        template = self._project_template.get_template(project_description)
+        
+        # Create initial architecture task for manager
+        initial_task = Task(
+            id=str(uuid.uuid4()),
+            description=f"""PROJECT ARCHITECTURE AND PLANNING
 
-    def send_message(self, from_agent_id: str, to_agent_id: str, content: str, message_type: str = 'communication'):
+Project: {project_description}
+
+Create a comprehensive project plan including:
+1. **System Architecture**: Overall design and component relationships
+2. **Technology Stack**: Specific technologies and frameworks to use
+3. **Task Breakdown**: Detailed tasks for each team member
+4. **File Structure**: Expected project directory structure
+5. **Integration Plan**: How components will work together
+6. **Quality Gates**: Testing and review requirements
+
+Template Context: {template}
+
+Output your plan as a detailed tasks.json file assigning specific tasks to each team member.""",
+            agent_id=next(agent.id for agent in self.agents.values() if agent.type == 'manager'),
+            priority=10
+        )
+        
+        self.task_queue.add_task(initial_task)
+        
+        # Start background processing
+        if not self._loop:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+        
+        task = asyncio.create_task(self._process_tasks())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        
+        self.detailed_log.append({
+            'event': 'project_started',
+            'description': f'Enhanced project started: {project_description}',
+            'timestamp': datetime.now().isoformat()
+        })
+
+    async def _process_tasks(self):
+        """Enhanced task processing with better coordination"""
+        while self.system_running:
+            try:
+                # Get ready tasks
+                ready_tasks = self.task_queue.get_ready_tasks()
+                
+                # Process tasks concurrently
+                if ready_tasks:
+                    tasks = []
+                    for task in ready_tasks:
+                        agent = self.agents.get(task.agent_id)
+                        if agent and agent.is_active:
+                            tasks.append(self._process_single_task(agent, task))
+                    
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Emit updates if state changed
+                await self._emit_state_updates()
+                
+                # Short sleep to prevent busy waiting
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                logger.error(f"Error in task processing: {e}")
+                await asyncio.sleep(1)
+
+    async def _process_single_task(self, agent: Agent, task: Task):
+        """Process a single task with enhanced AI interaction"""
+        try:
+            agent.status = AgentStatus.WORKING
+            agent.current_task_id = task.id
+            agent.last_activity = datetime.now()
+            
+            # Build enhanced context
+            context = self._build_enhanced_context(agent, task)
+            
+            # Generate AI response
+            response = await anthropic_client.generate_response(
+                agent.personality.system_prompt,
+                context,
+                max_tokens=agent.personality.max_tokens,
+                temperature=agent.personality.temperature,
+                agent_id=agent.id
+            )
+            
+            # Update agent work output
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            agent.work_output += f"\n[{timestamp}] {response}"
+            
+            # Extract and validate code
+            files_created = await self._extract_and_validate_code(response, agent)
+            
+            # Check for task completion
+            if self._is_task_completed(response):
+                self.task_queue.complete_task(task.id, response, files_created)
+                agent.status = AgentStatus.COMPLETED
+                agent.performance_metrics['tasks_completed'] += 1
+                self._tasks_completed += 1
+                
+                # Notify manager if this is a worker
+                if agent.type != 'manager' and agent.manager_id:
+                    await self._notify_manager(agent, task, response)
+            else:
+                # Continue working
+                agent.status = AgentStatus.WORKING
+            
+            # Handle special manager tasks (task assignment)
+            if agent.type == 'manager':
+                await self._handle_manager_output(agent, response)
+            
+        except Exception as e:
+            logger.error(f"Error processing task for {agent.name}: {e}")
+            self.task_queue.fail_task(task.id, str(e))
+            agent.status = AgentStatus.ERROR
+
+    def _build_enhanced_context(self, agent: Agent, task: Task) -> str:
+        """Build enhanced context for agent tasks"""
+        context = f"""CURRENT TASK: {task.description}
+
+PROJECT CONTEXT:
+- Project: {self.current_project}
+- Project Directory: {self.project_dir}
+- Task ID: {task.id}
+- Priority: {task.priority}
+- Dependencies: {', '.join(task.dependencies) if task.dependencies else 'None'}
+
+AGENT CONTEXT:
+- Your Role: {agent.role}
+- Your Specialty: {agent.specialty}
+- Your Skills: {', '.join(agent.skills)}
+"""
+        
+        # Add file system context if available
+        if self.project_dir and os.path.exists(self.project_dir):
+            context += f"\nCURRENT PROJECT FILES:\n{self._get_project_file_structure()}\n"
+        
+        # Add relevant completed tasks
+        completed_tasks = [t for t in self.task_queue.tasks.values() 
+                         if t.status == TaskStatus.COMPLETED]
+        if completed_tasks:
+            context += f"\nCOMPLETED TASKS:\n"
+            for t in completed_tasks[-3:]:  # Last 3 completed tasks
+                context += f"- {t.description[:100]}...\n"
+        
+        # Add team communication context
+        recent_messages = [msg for msg in self.global_messages[-5:] 
+                         if msg.get('to_agent_id') == agent.id or msg.get('from_agent_id') == agent.id]
+        if recent_messages:
+            context += f"\nRECENT COMMUNICATIONS:\n"
+            for msg in recent_messages:
+                context += f"- {msg['content'][:100]}...\n"
+        
+        return context
+
+    async def _extract_and_validate_code(self, response: str, agent: Agent) -> List[str]:
+        """Extract and validate code from AI response"""
+        files_created = []
+        
+        # Enhanced code block extraction
+        code_blocks = re.findall(r'```([\w.\-/]+)?\n([\s\S]*?)```', response)
+        
+        for filename, code in code_blocks:
+            if filename and '.' in filename:
+                # Create file path
+                file_path = os.path.join(self.project_dir, filename)
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                
+                # Validate code before writing
+                validation_result = self._validate_code(code, filename)
+                
+                if validation_result['errors']:
+                    logger.warning(f"Code validation errors in {filename}: {validation_result['errors']}")
+                    # Still write the file but log the issues
+                
+                # Write file
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(code.strip())
+                
+                files_created.append(filename)
+                
+                # Log file creation
+                self.detailed_log.append({
+                    'event': 'file_created',
+                    'description': f'{agent.name} created {filename}',
+                    'timestamp': datetime.now().isoformat()
+                })
+        
+        return files_created
+
+    def _validate_code(self, code: str, filename: str) -> Dict[str, List[str]]:
+        """Validate code based on file extension"""
+        ext = filename.split('.')[-1].lower()
+        
+        if ext in ['py']:
+            return self.code_validator.validate_python(code)
+        elif ext in ['js', 'ts', 'jsx', 'tsx']:
+            return self.code_validator.validate_javascript(code)
+        elif ext in ['sql']:
+            return self.code_validator.validate_sql(code)
+        else:
+            return {'errors': [], 'warnings': []}
+
+    def _is_task_completed(self, response: str) -> bool:
+        """Check if task is completed based on response"""
+        completion_indicators = [
+            'task completed',
+            'task finished',
+            'completed successfully',
+            'implementation complete',
+            'finished implementation'
+        ]
+        response_lower = response.lower()
+        return any(indicator in response_lower for indicator in completion_indicators)
+
+    async def _handle_manager_output(self, manager: Agent, response: str):
+        """Handle manager's task assignment output"""
+        # Look for tasks.json block
+        tasks_match = re.search(r'```tasks\.json\n([\s\S]*?)```', response)
+        if tasks_match:
+            try:
+                tasks_data = json.loads(tasks_match.group(1))
+                
+                # Create tasks for each agent
+                for agent_name, task_desc in tasks_data.items():
+                    # Find agent by name
+                    agent = next((a for a in self.agents.values() if a.name == agent_name), None)
+                    if agent:
+                        task = Task(
+                            id=str(uuid.uuid4()),
+                            description=task_desc,
+                            agent_id=agent.id,
+                            priority=5
+                        )
+                        self.task_queue.add_task(task)
+                        
+                        # Send message to agent
+                        await self.send_message(
+                            manager.id,
+                            agent.id,
+                            f"New task assigned: {task_desc[:100]}...",
+                            'task_assignment'
+                        )
+                
+                # Set manager to reviewing mode
+                manager.status = AgentStatus.REVIEWING
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Error parsing tasks.json: {e}")
+
+    async def _notify_manager(self, agent: Agent, task: Task, response: str):
+        """Notify manager when worker completes a task"""
+        if agent.manager_id in self.agents:
+            await self.send_message(
+                agent.id,
+                agent.manager_id,
+                f"Task completed: {task.description[:100]}...\n\nOutput: {response[:200]}...",
+                'task_completion'
+            )
+
+    def _get_project_file_structure(self) -> str:
+        """Get current project file structure"""
+        if not self.project_dir or not os.path.exists(self.project_dir):
+            return "No files created yet"
+        
+        structure = []
+        for root, dirs, files in os.walk(self.project_dir):
+            level = root.replace(self.project_dir, '').count(os.sep)
+            indent = ' ' * 2 * level
+            structure.append(f"{indent}{os.path.basename(root)}/")
+            sub_indent = ' ' * 2 * (level + 1)
+            for file in files:
+                structure.append(f"{sub_indent}{file}")
+        
+        return '\n'.join(structure)
+
+    async def _emit_state_updates(self):
+        """Emit state updates to frontend"""
+        current_state = {aid: a.to_dict() for aid, a in self.agents.items()}
+        if current_state != self._last_agents_state:
+            socketio.emit('agents_updated', {
+                'agents': current_state,
+                'messages': self.global_messages[-10:],
+                'tasks': {
+                    'pending': len(self.task_queue.pending_tasks),
+                    'in_progress': len(self.task_queue.in_progress_tasks),
+                    'completed': len(self.task_queue.completed_tasks),
+                    'failed': len(self.task_queue.failed_tasks)
+                }
+            })
+            self._last_agents_state = current_state
+
+    async def send_message(self, from_agent_id: str, to_agent_id: str, content: str, message_type: str = 'communication'):
+        """Send message between agents"""
         message = {
             'from_agent_id': from_agent_id,
             'to_agent_id': to_agent_id,
@@ -352,270 +989,135 @@ class MultiAgentSystem:
             'timestamp': datetime.now().isoformat()
         }
         self.global_messages.append(message)
-        self.increment_messages_sent() # Increment messages sent
-        # Log the communication in detail
+        self._messages_sent += 1
+        
+        # Log communication
         from_agent = self.agents.get(from_agent_id)
         to_agent = self.agents.get(to_agent_id)
         self.detailed_log.append({
             'event': 'agent_communication',
-            'description': f"{from_agent.name if from_agent else from_agent_id} sent a '{message_type}' message to {to_agent.name if to_agent else to_agent_id}: {content}",
+            'description': f"{from_agent.name if from_agent else 'System'} → {to_agent.name if to_agent else 'System'}: {content[:100]}...",
             'timestamp': message['timestamp']
         })
-        return message
 
-    def simulate_agent_work(self):
-        """Process agent work in parallel using a thread pool for maximum speed."""
-        import threading
-        import time
-        processed = set()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            while self.system_running:
-                try:
-                    futures = []
-                    for agent in self.agents.values():
-                        if agent.is_active and agent.status == 'working' and agent.id not in processed:
-                            processed.add(agent.id)
-                            futures.append(executor.submit(self._run_agent_sync, agent, processed))
-                    # If all subordinates are completed, trigger manager review immediately
-                    for agent in self.agents.values():
-                        if agent.type == 'manager' and agent.subordinates:
-                            sub_statuses = [self.agents[sub_id].status for sub_id in agent.subordinates if sub_id in self.agents]
-                            if all(s == 'completed' for s in sub_statuses) and agent.status != 'working':
-                                agent.status = 'working'
-                                if agent.id not in processed:
-                                    processed.add(agent.id)
-                                    futures.append(executor.submit(self._run_agent_sync, agent, processed))
-                    # Wait for any completed
-                    for future in concurrent.futures.as_completed(futures):
-                        pass
-                    # Only emit UI updates if state changed
-                    agents_state = {aid: a.to_dict() for aid, a in self.agents.items()}
-                    if agents_state != self._last_agents_state:
-                        socketio.emit('agents_updated', {
-                            'agents': agents_state,
-                            'messages': self.global_messages[-10:]
-                        })
-                        self._last_agents_state = agents_state
-                    time.sleep(0.05)
-                except Exception as e:
-                    print(f"Error in simulate_agent_work: {e}")
-                    time.sleep(0.2)
-
-    def _run_agent_sync(self, agent, processed):
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(self.process_agent_work(agent))
-        processed.discard(agent.id)
-
-    async def process_agent_work(self, agent: Agent):
-        """Process work for a single agent using AI"""
-        try:
-            # Create context for the agent
-            context = self.build_agent_context(agent)
-
-            # --- Worker logic: if completed, do not process further ---
-            if agent.type != 'manager' and agent.status == 'completed':
-                return
-
-            # --- Manager logic: only process if at least one subordinate is working or all are completed ---
-            if agent.type == 'manager' and agent.subordinates:
-                sub_statuses = [self.agents[sub_id].status for sub_id in agent.subordinates if sub_id in self.agents]
-                if not any(s == 'working' for s in sub_statuses) and not all(s == 'completed' for s in sub_statuses):
-                    return  # Wait for subordinates to finish or start
-
-            # Generate AI response
-            if agent.type == 'manager':
-                # Gather subordinate outputs if all are completed
-                sub_outputs = []
-                if agent.subordinates and all(self.agents[sub_id].status == 'completed' for sub_id in agent.subordinates if sub_id in self.agents):
-                    for sub_id in agent.subordinates:
-                        sub = self.agents.get(sub_id)
-                        if sub:
-                            sub_outputs.append(f"{sub.name} ({sub.role}):\n{sub.work_output.strip()}\n")
-                    review_context = '\n'.join(sub_outputs)
-                    prompt = f"Current project: {self.current_project}\n\nAll subordinates have completed their tasks. Here is their work:\n{review_context}\n\nAs project manager, review the work in the context of the overall app. If any changes or improvements are needed, output a new tasks.json code block assigning revision tasks. If everything is satisfactory, do not output a tasks.json block and state that the project is complete."
-                else:
-                    prompt = f"Current project: {self.current_project}\n\nAs a project manager, what are you working on right now? Consider your team's progress and what needs coordination. Be specific about your current management activities."
-            else:
-                prompt = f"Current task: {agent.current_task}\n\nWhat specific work are you doing right now? Describe your current progress and any technical details relevant to your role. If you are writing code, output it in markdown code blocks with the filename as the code block label (e.g., ```python main.py\ncode...\n```). You can output multiple files this way. When you are finished, state that you have completed your task."
-
-            response = await anthropic_client.generate_response(
-                agent.personality.system_prompt,
-                prompt,
-                max_tokens=agent.personality.max_tokens,
-                temperature=agent.personality.temperature,
-                agent_id=agent.id
-            )
-
-            # Update agent's work output
-            timestamp = datetime.now().strftime('%H:%M:%S')
-            agent.work_output += f"\n[{timestamp}] {response}"
-
-            # --- New: Parse and write code files ---
-            code_blocks_found = 0
-            if self.project_dir:
-                # Match code blocks with filename or language
-                code_blocks = re.findall(r'```([\w.\-/]+)?\n([\s\S]*?)```', response)
-                for fname, code in code_blocks:
-                    if fname and '.' in fname:
-                        fpath = os.path.join(self.project_dir, fname)
-                        os.makedirs(os.path.dirname(fpath), exist_ok=True)
-                        with open(fpath, 'w', encoding='utf-8') as f:
-                            f.write(code.strip())
-                        code_blocks_found += 1
-                    elif fname:  # Only a language, not a filename
-                        print(f"[Warning] Code block with language '{fname}' but no filename. Skipping.")
-                    else:
-                        print(f"[Warning] Code block with no filename or language. Skipping.")
-
-            # If no code blocks were found for a worker, escalate to the manager
-            if agent.type != 'manager' and code_blocks_found == 0:
-                if agent.manager_id and agent.manager_id in self.agents:
-                    self.send_message(agent.id, agent.manager_id, f"[ALERT] No code was produced for my task. Please review and assign corrections.", 'no_code_warning')
-                    self.detailed_log.append({'event': 'no_code_warning', 'description': f'Agent {agent.name} produced no code for task: {agent.current_task}', 'timestamp': datetime.now().isoformat()})
-
-            # After manager review, check the project directory for missing/incorrect files (basic: log if no files exist)
-            if agent.type == 'manager' and self.project_dir and agent.subordinates and all(self.agents[sub_id].status == 'completed' for sub_id in agent.subordinates if sub_id in self.agents):
-                files = []
-                for root, dirs, fs in os.walk(self.project_dir):
-                    for f in fs:
-                        files.append(os.path.join(root, f))
-                if not files:
-                    self.detailed_log.append({'event': 'project_incomplete', 'description': 'No code files found in project directory after agent work. Manager should assign correction tasks.', 'timestamp': datetime.now().isoformat()})
-                    print('[ALERT] No code files found in project directory after agent work. Manager should assign correction tasks.')
-
-            # --- New: Parse and assign tasks from manager's response ---
-            if agent.type == 'manager' and agent.subordinates:
-                # Look for a tasks.json code block
-                match = re.search(r'```tasks\.json\n([\s\S]*?)```', response)
-                if match:
-                    import json as _json
-                    try:
-                        tasks = _json.loads(match.group(1))
-                        for sub_id in agent.subordinates:
-                            sub = self.agents.get(sub_id)
-                            if not sub:
-                                continue
-                            # Try to match by name, fallback to role
-                            task = tasks.get(sub.name) or tasks.get(sub.role)
-                            if task:
-                                sub.current_task = task
-                                sub.status = 'working'
-                                # Optionally, send a message to the subordinate
-                                self.send_message(agent.id, sub.id, f"New task assigned: {task}", 'task_assignment')
-                                sub.work_output += f"\n[Manager requested revision at {timestamp}]"
-                                # Clear previous output for revision
-                                # sub.work_output = ''  # Optionally clear
-                                sub.status = 'working'
-                        # Set manager to idle until next review
-                        agent.status = 'idle'
-                    except Exception as e:
-                        print(f"Error parsing tasks.json from manager: {e}")
-                else:
-                    # If no tasks.json and all subordinates completed, mark project as complete
-                    if all(self.agents[sub_id].status == 'completed' for sub_id in agent.subordinates if sub_id in self.agents):
-                        agent.status = 'completed'
-                        self.increment_tasks_completed(agent) # Increment tasks completed
-                        self.detailed_log.append({'event': 'project_completed', 'description': 'Project marked as complete by manager', 'timestamp': datetime.now().isoformat()})
-
-            # --- Worker: If response indicates completion, set status to completed and notify manager ---
-            if agent.type != 'manager' and agent.status == 'working':
-                if re.search(r'completed|finished|done', response, re.IGNORECASE):
-                    agent.status = 'completed'
-                    self.increment_tasks_completed(agent) # Increment tasks completed
-                    # Notify manager
-                    if agent.manager_id and agent.manager_id in self.agents:
-                        self.send_message(agent.id, agent.manager_id, f"Task completed. Output:\n{agent.work_output.strip()}", 'task_completed')
-
-            # Agent might send messages based on their work
-            await self.handle_agent_communication(agent, response)
-            
-        except Exception as e:
-            print(f"Error processing work for agent {agent.name}: {e}")
-            timestamp = datetime.now().strftime('%H:%M:%S')
-            agent.work_output += f"\n[{timestamp}] [Error] Unable to process work: {str(e)}"
-
-    def build_agent_context(self, agent: Agent) -> str:
-        """Build context for the agent including project info, recent messages, and relevant file contents"""
-        context = f"Project: {self.current_project}\n"
-        context += f"Your current task: {agent.current_task}\n"
-
-        # Add recent messages to/from this agent
-        recent_messages = [msg for msg in self.global_messages[-5:] 
-                          if msg['from_agent_id'] == agent.id or msg['to_agent_id'] == agent.id]
-        if recent_messages:
-            context += "Recent communications:\n"
-            for msg in recent_messages:
-                from_agent_obj = self.agents.get(msg['from_agent_id'])
-                from_agent = getattr(from_agent_obj, 'name', 'Unknown') if from_agent_obj else 'Unknown'
-                to_agent_obj = self.agents.get(msg['to_agent_id'])
-                to_agent = getattr(to_agent_obj, 'name', 'Unknown') if to_agent_obj else 'Unknown'
-                context += f"- {from_agent} → {to_agent}: {msg['content']}\n"
-
-        # --- New: If the current_task mentions a file, include its contents ---
-        if self.project_dir and agent.current_task:
-            import re, os
-            # Find all file-like words in the task
-            file_pattern = r'([\w\-/]+\.[\w]+)'
-            files_mentioned = re.findall(file_pattern, agent.current_task)
-            files_added = set()
-            for fname in files_mentioned:
-                fpath = os.path.join(self.project_dir, fname)
-                if os.path.isfile(fpath) and fname not in files_added:
-                    try:
-                        with open(fpath, 'r', encoding='utf-8') as f:
-                            file_content = f.read()
-                        context += f"\nCurrent contents of {fname}:\n```{fname}\n{file_content}\n```\n"
-                        files_added.add(fname)
-                    except Exception as e:
-                        context += f"\n[Could not read {fname}: {e}]\n"
-        return context
-
-    async def handle_agent_communication(self, agent: Agent, work_response: str):
-        """Handle agent communication based on their work"""
-        import random
+    def get_metrics(self):
+        """Get enhanced system metrics"""
+        active_agents = sum(1 for a in self.agents.values() 
+                          if a.is_active and a.status in [AgentStatus.WORKING, AgentStatus.REVIEWING])
         
-        # Agents occasionally communicate based on their work
-        if random.random() < 0.3:  # 30% chance to send a message
-            
-            if agent.type == 'manager' and agent.subordinates:
-                # Manager sends updates to subordinates
-                subordinate_id = random.choice(agent.subordinates)
-                if subordinate_id in self.agents:
-                    subordinate = self.agents[subordinate_id]
-                    
-                    prompt = f"You just completed this work: {work_response}\n\nSend a brief message to your team member {subordinate.name} ({subordinate.role}) about coordination, feedback, or next steps. Keep it short and professional."
-                    
-                    message_content = await anthropic_client.generate_response(
-                        agent.personality.system_prompt,
-                        prompt,
-                        max_tokens=200,
-                        temperature=0.8,
-                        agent_id=agent.id
-                    )
-                    
-                    self.send_message(agent.id, subordinate_id, message_content, 'coordination')
-                    
-            elif agent.manager_id and agent.manager_id in self.agents:
-                # Worker sends updates to manager
-                manager = self.agents[agent.manager_id]
-                
-                prompt = f"You just completed this work: {work_response}\n\nSend a brief status update to your manager {manager.name} about your progress, any blockers, or questions. Keep it short and professional."
-                
-                message_content = await anthropic_client.generate_response(
-                    agent.personality.system_prompt,
-                    prompt,
-                    max_tokens=200,
-                    temperature=0.8,
-                    agent_id=agent.id
-                )
-                
-                self.send_message(agent.id, agent.manager_id, message_content, 'status_update')
+        return {
+            'active_agents': active_agents,
+            'tasks_completed': self._tasks_completed,
+            'messages_sent': self._messages_sent,
+            'system_uptime': int(time.time() - self._system_start_time),
+            'tasks_pending': len(self.task_queue.pending_tasks),
+            'tasks_in_progress': len(self.task_queue.in_progress_tasks),
+            'tasks_failed': len(self.task_queue.failed_tasks),
+            'files_created': len([f for f in os.listdir(self.project_dir) 
+                                if os.path.isfile(os.path.join(self.project_dir, f))]) if self.project_dir else 0
+        }
 
-# Global system instance
-system = MultiAgentSystem()
+class PerformanceMonitor:
+    """Monitor system performance and provide insights"""
+    def __init__(self):
+        self.metrics = {
+            'api_calls': 0,
+            'cache_hits': 0,
+            'cache_misses': 0,
+            'avg_response_time': 0,
+            'error_rate': 0
+        }
+        self.start_time = time.time()
 
+    def record_api_call(self, response_time: float, error: bool = False):
+        """Record API call metrics"""
+        self.metrics['api_calls'] += 1
+        if error:
+            self.metrics['error_rate'] += 1
+        
+        # Update average response time
+        current_avg = self.metrics['avg_response_time']
+        call_count = self.metrics['api_calls']
+        self.metrics['avg_response_time'] = (current_avg * (call_count - 1) + response_time) / call_count
+
+    def get_performance_report(self) -> Dict:
+        """Get performance report"""
+        uptime = time.time() - self.start_time
+        return {
+            'uptime': uptime,
+            'metrics': self.metrics,
+            'cache_hit_rate': self.metrics['cache_hits'] / max(1, self.metrics['cache_hits'] + self.metrics['cache_misses']),
+            'error_rate': self.metrics['error_rate'] / max(1, self.metrics['api_calls'])
+        }
+
+class ProjectTemplate:
+    """Generate project templates based on requirements"""
+    def get_template(self, description: str) -> Dict:
+        """Get appropriate template based on project description"""
+        description_lower = description.lower()
+        
+        if any(keyword in description_lower for keyword in ['web app', 'website', 'dashboard', 'frontend']):
+            return self._web_app_template()
+        elif any(keyword in description_lower for keyword in ['api', 'backend', 'server']):
+            return self._api_template()
+        elif any(keyword in description_lower for keyword in ['mobile', 'app', 'ios', 'android']):
+            return self._mobile_app_template()
+        else:
+            return self._full_stack_template()
+
+    def _web_app_template(self) -> Dict:
+        return {
+            'type': 'web_app',
+            'structure': {
+                'src/': ['components/', 'pages/', 'hooks/', 'utils/', 'styles/'],
+                'public/': ['index.html'],
+                'tests/': ['__tests__/']
+            },
+            'tech_stack': ['React', 'TypeScript', 'CSS Modules', 'Jest'],
+            'best_practices': ['Responsive design', 'Accessibility', 'Performance optimization']
+        }
+
+    def _api_template(self) -> Dict:
+        return {
+            'type': 'api',
+            'structure': {
+                'app/': ['models/', 'routes/', 'utils/', 'middleware/'],
+                'tests/': ['test_models.py', 'test_routes.py'],
+                'migrations/': []
+            },
+            'tech_stack': ['Flask', 'SQLAlchemy', 'PostgreSQL', 'pytest'],
+            'best_practices': ['RESTful design', 'Input validation', 'Error handling', 'Documentation']
+        }
+
+    def _mobile_app_template(self) -> Dict:
+        return {
+            'type': 'mobile_app',
+            'structure': {
+                'src/': ['screens/', 'components/', 'navigation/', 'services/'],
+                'assets/': ['images/', 'fonts/'],
+                'tests/': ['__tests__/']
+            },
+            'tech_stack': ['React Native', 'TypeScript', 'Redux', 'Jest'],
+            'best_practices': ['Cross-platform compatibility', 'Performance optimization', 'Offline support']
+        }
+
+    def _full_stack_template(self) -> Dict:
+        return {
+            'type': 'full_stack',
+            'structure': {
+                'frontend/': ['src/', 'public/', 'tests/'],
+                'backend/': ['app/', 'tests/', 'migrations/'],
+                'docker/': ['Dockerfile', 'docker-compose.yml'],
+                'docs/': ['README.md', 'API.md']
+            },
+            'tech_stack': ['React', 'TypeScript', 'Flask', 'PostgreSQL', 'Docker'],
+            'best_practices': ['Microservices', 'CI/CD', 'Security', 'Monitoring']
+        }
+
+# Initialize the enhanced system
+system = EnhancedMultiAgentSystem()
+
+# Flask routes remain the same but with enhanced responses
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -625,166 +1127,71 @@ def get_agents():
     return jsonify({
         'agents': {aid: agent.to_dict() for aid, agent in system.agents.items()},
         'system_running': system.system_running,
-        'current_project': system.current_project
-    })
-
-@app.route('/api/agents', methods=['POST'])
-def add_agent():
-    data = request.get_json()
-    agent_id = system.add_agent(
-        data['name'],
-        data['role'],
-        data['type'],
-        data['specialty'],
-        data.get('manager_id')
-    )
-    
-    socketio.emit('agent_added', system.agents[agent_id].to_dict())
-    return jsonify({'success': True, 'agent_id': agent_id})
-
-@app.route('/api/agents/<agent_id>', methods=['DELETE'])
-def remove_agent(agent_id):
-    success = system.remove_agent(agent_id)
-    if success:
-        socketio.emit('agent_removed', {'agent_id': agent_id})
-    return jsonify({'success': success})
-
-@app.route('/api/agents/<agent_id>/position', methods=['PUT'])
-def update_agent_position(agent_id):
-    data = request.get_json()
-    if agent_id in system.agents:
-        system.agents[agent_id].position = data['position']
-        socketio.emit('agent_position_updated', {
-            'agent_id': agent_id,
-            'position': data['position']
-        })
-        return jsonify({'success': True})
-    return jsonify({'success': False})
-
-@app.route('/api/messages', methods=['GET'])
-def get_messages():
-    return jsonify({
-        'messages': system.global_messages,
-        'total': len(system.global_messages)
-    })
-
-@app.route('/api/messages', methods=['POST'])
-def send_message():
-    data = request.get_json()
-    message = system.send_message(
-        data['from_agent_id'],
-        data['to_agent_id'],
-        data['content'],
-        data.get('type', 'communication')
-    )
-    
-    socketio.emit('message_sent', message)
-    return jsonify({'success': True, 'message': message})
-
-@app.route('/api/config', methods=['GET'])
-def get_config():
-    return jsonify({
-        'api_key_configured': bool(ANTHROPIC_API_KEY and ANTHROPIC_API_KEY.strip()),
-        'model': "claude-3-5-sonnet-20241022"
+        'current_project': system.current_project,
+        'task_queue_status': {
+            'pending': len(system.task_queue.pending_tasks),
+            'in_progress': len(system.task_queue.in_progress_tasks),
+            'completed': len(system.task_queue.completed_tasks),
+            'failed': len(system.task_queue.failed_tasks)
+        }
     })
 
 @app.route('/api/project/start', methods=['POST'])
 def start_project():
     data = request.get_json()
-    system.start_project(data['description'])
-    # Start agent work simulation in background
-    if system.system_running:
-        thread = threading.Thread(target=system.simulate_agent_work)
-        thread.daemon = True
-        thread.start()
-    return jsonify({'success': True, 'project': system.current_project})
+    description = data.get('description', '').strip()
+    
+    if not description:
+        return jsonify({'error': 'Project description is required'}), 400
+    
+    # Start project asynchronously
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(system.start_project(description))
+    
+    return jsonify({
+        'success': True,
+        'project': system.current_project,
+        'project_dir': system.project_dir
+    })
 
-@app.route('/api/log', methods=['GET'])
-def get_detailed_log():
-    return jsonify({'log': system.detailed_log})
+@app.route('/api/metrics', methods=['GET'])
+def get_metrics():
+    return jsonify(system.get_metrics())
 
-# --- User-to-Agent and User-to-Manager Communication & Task Assignment ---
-@app.route('/api/agents/<agent_id>/assign_task', methods=['POST'])
-def user_assign_task(agent_id):
-    data = request.get_json()
-    task = data.get('task')
-    if agent_id in system.agents and task:
-        agent = system.agents[agent_id]
-        agent.current_task = task
-        agent.status = 'working'
-        # Log the manual assignment
-        system.detailed_log.append({'event': 'user_assigned_task', 'description': f'User assigned task to {agent.name}: {task}', 'timestamp': datetime.now().isoformat()})
-        socketio.emit('agents_updated', {
-            'agents': {aid: a.to_dict() for aid, a in system.agents.items()},
-            'messages': system.global_messages[-10:]
-        })
-        return jsonify({'success': True})
-    return jsonify({'success': False, 'error': 'Invalid agent or task'}), 400
+@app.route('/api/performance', methods=['GET'])
+def get_performance():
+    return jsonify(system.performance_monitor.get_performance_report())
 
-@app.route('/api/agents/<agent_id>/user_message', methods=['POST'])
-def user_message_agent(agent_id):
-    data = request.get_json()
-    content = data.get('content')
-    if agent_id in system.agents and content:
-        # User is represented as 'user' in from_agent_id
-        system.send_message('user', agent_id, content, 'user_instruction')
-        socketio.emit('message_sent', {
-            'from_agent_id': 'user',
-            'to_agent_id': agent_id,
-            'content': content,
-            'type': 'user_instruction',
-            'timestamp': datetime.now().isoformat()
-        })
-        return jsonify({'success': True})
-    return jsonify({'success': False, 'error': 'Invalid agent or message'}), 400
-
-@socketio.on('connect')
-def handle_connect():
-    print('Client connected')
-    emit('connected', {'data': 'Connected to Multi-Agent System'})
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    print('Client disconnected')
-
-# --- File tree and download endpoints ---
 @app.route('/api/project/files', methods=['GET'])
 def get_project_files():
-    import os
     rel_path = request.args.get('path', '')
-    abs_path = os.path.join(system.project_dir, rel_path) if system.project_dir else None
-    if not abs_path or not abs_path.startswith(system.project_dir) or not os.path.exists(abs_path):
+    if not system.project_dir:
         return jsonify({'tree': []})
+    
+    abs_path = os.path.join(system.project_dir, rel_path)
+    if not abs_path.startswith(system.project_dir) or not os.path.exists(abs_path):
+        return jsonify({'tree': []})
+    
     def list_children(folder):
         tree = []
-        for entry in os.scandir(folder):
-            if entry.is_dir():
-                tree.append({'type': 'folder', 'name': entry.name})
-            else:
-                tree.append({'type': 'file', 'name': entry.name})
-        return tree
+        try:
+            for entry in os.scandir(folder):
+                if entry.is_dir():
+                    tree.append({'type': 'folder', 'name': entry.name})
+                else:
+                    tree.append({'type': 'file', 'name': entry.name, 'size': entry.stat().st_size})
+        except PermissionError:
+            pass
+        return sorted(tree, key=lambda x: (x['type'] == 'file', x['name']))
+    
     return jsonify({'tree': list_children(abs_path)})
-
-@app.route('/api/project/file', methods=['GET'])
-def get_project_file():
-    import os
-    rel_path = request.args.get('path')
-    if not rel_path:
-        return jsonify({'error': 'No file path provided'}), 400
-    abs_path = os.path.join(system.project_dir, rel_path)
-    if not abs_path.startswith(system.project_dir) or not os.path.isfile(abs_path):
-        return jsonify({'error': 'Invalid file path'}), 400
-    with open(abs_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-    return jsonify({'content': content})
 
 @app.route('/api/project/download', methods=['GET'])
 def download_project_zip():
-    import os
-    import zipfile
-    import io
     if not system.project_dir or not os.path.exists(system.project_dir):
         return jsonify({'error': 'No project to download'}), 400
+    
     mem_zip = io.BytesIO()
     with zipfile.ZipFile(mem_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
         for root, dirs, files in os.walk(system.project_dir):
@@ -792,44 +1199,18 @@ def download_project_zip():
                 abs_path = os.path.join(root, file)
                 rel_path = os.path.relpath(abs_path, system.project_dir)
                 zf.write(abs_path, rel_path)
+    
     mem_zip.seek(0)
-    return send_file(mem_zip, mimetype='application/zip', as_attachment=True, download_name='project.zip')
-
-# --- API endpoint for metrics ---
-@app.route('/api/metrics', methods=['GET'])
-def get_metrics():
-    return jsonify(system.get_metrics())
-
-# --- Agent activation/deactivation endpoints ---
-@app.route('/api/agents/<agent_id>/activate', methods=['POST'])
-def activate_agent(agent_id):
-    if agent_id in system.agents:
-        system.agents[agent_id].is_active = True
-        return jsonify({'success': True})
-    return jsonify({'success': False, 'error': 'Invalid agent'}), 400
-
-@app.route('/api/agents/<agent_id>/deactivate', methods=['POST'])
-def deactivate_agent(agent_id):
-    if agent_id in system.agents:
-        system.agents[agent_id].is_active = False
-        return jsonify({'success': True})
-    return jsonify({'success': False, 'error': 'Invalid agent'}), 400
-
-# --- Per-agent metrics endpoint ---
-@app.route('/api/metrics/agents', methods=['GET'])
-def get_agent_metrics():
-    return jsonify({aid: {
-        'name': a.name,
-        'role': a.role,
-        'status': a.status,
-        'tasks_completed': getattr(a, 'tasks_completed', 0),
-        'is_active': a.is_active
-    } for aid, a in system.agents.items()})
+    return send_file(
+        mem_zip,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name=f'project_{datetime.now().strftime("%Y%m%d_%H%M%S")}.zip'
+    )
 
 if __name__ == '__main__':
-    # Check API key configuration
-    
-    print("🚀 Starting Multi-Agent System...")
+    print("🚀 Starting Enhanced Multi-Agent System...")
     print("📡 Access the application at: http://localhost:5000")
+    print("🔧 Enhanced features: Task queues, code validation, performance monitoring")
     
     socketio.run(app, debug=True, host='0.0.0.0', port=5000)

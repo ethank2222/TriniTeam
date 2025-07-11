@@ -3,23 +3,46 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Multi-Agent Intelligence Platform</title>
-        <link
-            rel="stylesheet"
-            href="{{ url_for('static', filename='css/style.css') }}"
+        <title>Enhanced Multi-Agent Intelligence Platform</title>
+        <meta
+            name="description"
+            content="AI-powered development coordination with enhanced performance monitoring and real-time collaboration"
         />
+        <meta
+            name="keywords"
+            content="AI, multi-agent, development, automation, collaboration"
+        />
+
+        <!-- Enhanced Stylesheets -->
+        <link rel="stylesheet" href="../static/css/style.css" />
         <link
             href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+            rel="stylesheet"
+        />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500;600&display=swap"
             rel="stylesheet"
         />
         <link
             href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
             rel="stylesheet"
         />
+
+        <!-- PWA Support -->
+        <link
+            rel="manifest"
+            href="{{ url_for('static', filename='manifest.json') }}"
+        />
+        <meta name="theme-color" content="#0ea5e9" />
+
+        <!-- Performance Optimizations -->
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com" />
     </head>
     <body>
         <div id="app" class="app-container">
-            <!-- Header -->
+            <!-- Enhanced Header -->
             <header class="header">
                 <div class="header-content">
                     <div class="brand">
@@ -27,14 +50,31 @@
                             <i class="fas fa-brain"></i>
                         </div>
                         <div class="brand-text">
-                            <h1>Multi-Agent Intelligence Platform</h1>
-                            <p>AI-Powered Development Coordination</p>
+                            <h1>Enhanced Multi-Agent Intelligence Platform</h1>
+                            <p>
+                                AI-Powered Development Coordination with
+                                Advanced Analytics
+                            </p>
                         </div>
                     </div>
                     <div class="header-actions">
-                        <div class="status-indicator" id="connection-status">
+                        <div class="connection-status" id="connection-status">
                             <div class="status-dot"></div>
                             <span>Connected</span>
+                        </div>
+                        <div class="system-metrics-summary">
+                            <div class="metric-summary">
+                                <i class="fas fa-users"></i>
+                                <span id="header-active-agents">0</span>
+                            </div>
+                            <div class="metric-summary">
+                                <i class="fas fa-tasks"></i>
+                                <span id="header-tasks-completed">0</span>
+                            </div>
+                            <div class="metric-summary">
+                                <i class="fas fa-clock"></i>
+                                <span id="header-system-uptime">00:00:00</span>
+                            </div>
                         </div>
                         <button id="system-status" class="status-btn">
                             <i class="fas fa-pause"></i>
@@ -44,7 +84,7 @@
                 </div>
             </header>
 
-            <!-- Navigation -->
+            <!-- Enhanced Navigation -->
             <nav class="navigation">
                 <div class="nav-container">
                     <div class="nav-tabs">
@@ -64,11 +104,27 @@
                             <i class="fas fa-folder-open"></i>
                             <span>Files</span>
                         </button>
+                        <button class="nav-tab" data-view="performance">
+                            <i class="fas fa-chart-bar"></i>
+                            <span>Performance</span>
+                        </button>
+                        <button class="nav-tab" data-view="logs">
+                            <i class="fas fa-terminal"></i>
+                            <span>Logs</span>
+                        </button>
                     </div>
                     <div class="nav-actions">
-                        <button id="toggle-connections" class="nav-action-btn">
-                            <i class="fas fa-eye"></i>
-                            <span>Connections</span>
+                        <button id="toggle-realtime" class="nav-action-btn">
+                            <i class="fas fa-sync"></i>
+                            <span>Real-time</span>
+                        </button>
+                        <button id="performance-report" class="nav-action-btn">
+                            <i class="fas fa-analytics"></i>
+                            <span>Analytics</span>
+                        </button>
+                        <button id="export-logs" class="nav-action-btn">
+                            <i class="fas fa-download"></i>
+                            <span>Export</span>
                         </button>
                         <button id="add-agent" class="nav-action-btn primary">
                             <i class="fas fa-plus"></i>
@@ -80,15 +136,52 @@
 
             <!-- Main Content -->
             <main class="main-content">
-                <!-- Dashboard View -->
+                <!-- Enhanced Dashboard View -->
                 <div id="dashboard-view" class="view active">
+                    <div class="view-header">
+                        <div class="view-title">
+                            <h2>System Dashboard</h2>
+                            <p>
+                                Monitor your multi-agent system performance and
+                                activity
+                            </p>
+                        </div>
+                        <div class="view-actions">
+                            <button
+                                id="pause-project"
+                                class="btn btn-outline"
+                                disabled
+                            >
+                                <i class="fas fa-pause"></i>
+                                <span>Pause</span>
+                            </button>
+                            <button
+                                id="refresh-dashboard"
+                                class="btn btn-outline"
+                            >
+                                <i class="fas fa-refresh"></i>
+                                <span>Refresh</span>
+                            </button>
+                        </div>
+                    </div>
+
                     <div class="dashboard-grid">
+                        <!-- Enhanced System Metrics -->
                         <div class="dashboard-card metrics-card">
                             <div class="card-header">
                                 <h3>System Metrics</h3>
                                 <div class="card-actions">
-                                    <button class="action-btn">
+                                    <button
+                                        class="action-btn"
+                                        id="refresh-metrics"
+                                    >
                                         <i class="fas fa-refresh"></i>
+                                    </button>
+                                    <button
+                                        class="action-btn"
+                                        id="export-metrics"
+                                    >
+                                        <i class="fas fa-download"></i>
                                     </button>
                                 </div>
                             </div>
@@ -138,10 +231,118 @@
                                             System Uptime
                                         </div>
                                     </div>
+                                    <div class="metric">
+                                        <div
+                                            class="metric-value"
+                                            id="files-created"
+                                        >
+                                            0
+                                        </div>
+                                        <div class="metric-label">
+                                            Files Created
+                                        </div>
+                                    </div>
+                                    <div class="metric">
+                                        <div
+                                            class="metric-value"
+                                            id="cache-hit-rate"
+                                        >
+                                            0%
+                                        </div>
+                                        <div class="metric-label">
+                                            Cache Hit Rate
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
 
+                        <!-- Enhanced Task Queue Status -->
+                        <div class="dashboard-card task-queue-card">
+                            <div class="card-header">
+                                <h3>Task Queue</h3>
+                                <div class="card-actions">
+                                    <button
+                                        class="action-btn"
+                                        id="clear-failed-tasks"
+                                    >
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-content">
+                                <div class="task-queue-metrics">
+                                    <div class="queue-metric">
+                                        <div class="queue-icon pending">
+                                            <i class="fas fa-clock"></i>
+                                        </div>
+                                        <div class="queue-info">
+                                            <div
+                                                class="queue-count"
+                                                id="tasks-pending"
+                                            >
+                                                0
+                                            </div>
+                                            <div class="queue-label">
+                                                Pending
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="queue-metric">
+                                        <div class="queue-icon in-progress">
+                                            <i
+                                                class="fas fa-spinner fa-spin"
+                                            ></i>
+                                        </div>
+                                        <div class="queue-info">
+                                            <div
+                                                class="queue-count"
+                                                id="tasks-in-progress"
+                                            >
+                                                0
+                                            </div>
+                                            <div class="queue-label">
+                                                In Progress
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="queue-metric">
+                                        <div class="queue-icon completed">
+                                            <i class="fas fa-check"></i>
+                                        </div>
+                                        <div class="queue-info">
+                                            <div
+                                                class="queue-count"
+                                                id="tasks-completed-queue"
+                                            >
+                                                0
+                                            </div>
+                                            <div class="queue-label">
+                                                Completed
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="queue-metric">
+                                        <div class="queue-icon failed">
+                                            <i class="fas fa-times"></i>
+                                        </div>
+                                        <div class="queue-info">
+                                            <div
+                                                class="queue-count"
+                                                id="tasks-failed"
+                                            >
+                                                0
+                                            </div>
+                                            <div class="queue-label">
+                                                Failed
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Enhanced Project Control -->
                         <div class="dashboard-card project-control-card">
                             <div class="card-header">
                                 <h3>Project Control</h3>
@@ -160,9 +361,54 @@
                                         >
                                         <textarea
                                             id="project-description"
-                                            placeholder="Describe your project requirements and objectives..."
+                                            placeholder="Describe your project requirements and objectives in detail..."
                                             rows="4"
+                                            class="form-textarea"
                                         ></textarea>
+                                        <div class="form-hint">
+                                            <i class="fas fa-lightbulb"></i>
+                                            <span
+                                                >Pro tip: Be specific about
+                                                technologies, features, and
+                                                requirements for better
+                                                results</span
+                                            >
+                                        </div>
+                                    </div>
+                                    <div class="project-templates">
+                                        <label>Quick Templates:</label>
+                                        <div class="template-buttons">
+                                            <button
+                                                class="template-btn"
+                                                data-template="web-app"
+                                            >
+                                                <i class="fas fa-desktop"></i>
+                                                <span>Web App</span>
+                                            </button>
+                                            <button
+                                                class="template-btn"
+                                                data-template="api"
+                                            >
+                                                <i class="fas fa-server"></i>
+                                                <span>API</span>
+                                            </button>
+                                            <button
+                                                class="template-btn"
+                                                data-template="dashboard"
+                                            >
+                                                <i class="fas fa-chart-pie"></i>
+                                                <span>Dashboard</span>
+                                            </button>
+                                            <button
+                                                class="template-btn"
+                                                data-template="mobile"
+                                            >
+                                                <i
+                                                    class="fas fa-mobile-alt"
+                                                ></i>
+                                                <span>Mobile App</span>
+                                            </button>
+                                        </div>
                                     </div>
                                     <div class="form-actions">
                                         <button
@@ -180,17 +426,34 @@
                                             <i class="fas fa-stop"></i>
                                             <span>Stop Project</span>
                                         </button>
+                                        <button
+                                            id="save-project"
+                                            class="btn btn-outline"
+                                        >
+                                            <i class="fas fa-save"></i>
+                                            <span>Save Draft</span>
+                                        </button>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
+                        <!-- Enhanced Activity Feed -->
                         <div class="dashboard-card activity-card">
                             <div class="card-header">
                                 <h3>Recent Activity</h3>
                                 <div class="card-actions">
-                                    <button class="action-btn">
-                                        <i class="fas fa-external-link-alt"></i>
+                                    <button
+                                        class="action-btn"
+                                        id="filter-activity"
+                                    >
+                                        <i class="fas fa-filter"></i>
+                                    </button>
+                                    <button
+                                        class="action-btn"
+                                        id="clear-activity"
+                                    >
+                                        <i class="fas fa-trash-alt"></i>
                                     </button>
                                 </div>
                             </div>
@@ -202,7 +465,8 @@
                                         </div>
                                         <div class="activity-content">
                                             <div class="activity-text">
-                                                System initialized successfully
+                                                Enhanced system initialized
+                                                successfully
                                             </div>
                                             <div class="activity-time">
                                                 Just now
@@ -215,70 +479,18 @@
                     </div>
                 </div>
 
-                <!-- Files View -->
-                <div id="files-view" class="view" style="display: none">
-                    <div class="view-header">
-                        <div class="view-title">
-                            <h2>Project Files</h2>
-                            <p>
-                                Browse, preview, and download the generated
-                                project files.
-                            </p>
-                        </div>
-                        <div class="view-actions">
-                            <button
-                                id="download-project"
-                                class="btn btn-primary"
-                            >
-                                <i class="fas fa-download"></i>
-                                <span>Download Project</span>
-                            </button>
-                        </div>
-                    </div>
-                    <div id="file-tree-container"></div>
-                    <div
-                        id="file-preview-container"
-                        style="margin-top: 2rem"
-                    ></div>
-                </div>
-
-                <!-- System Map View -->
-                <div id="system-view" class="view">
-                    <div class="system-container">
-                        <div class="system-canvas" id="system-canvas">
-                            <svg
-                                id="connections-svg"
-                                class="connections-overlay"
-                            ></svg>
-                            <div
-                                id="agents-container"
-                                class="agents-container"
-                            ></div>
-                            <div class="canvas-overlay">
-                                <div class="canvas-controls">
-                                    <button class="canvas-btn" id="zoom-in">
-                                        <i class="fas fa-search-plus"></i>
-                                    </button>
-                                    <button class="canvas-btn" id="zoom-out">
-                                        <i class="fas fa-search-minus"></i>
-                                    </button>
-                                    <button class="canvas-btn" id="reset-view">
-                                        <i class="fas fa-expand-arrows-alt"></i>
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Agents View -->
+                <!-- Enhanced Agents View -->
                 <div id="agents-view" class="view">
                     <div class="view-header">
                         <div class="view-title">
                             <h2>Agent Management</h2>
-                            <p>Configure and monitor your AI agents</p>
+                            <p>Configure, monitor, and manage your AI agents</p>
                         </div>
                         <div class="view-actions">
+                            <button class="btn btn-outline" id="bulk-actions">
+                                <i class="fas fa-tasks"></i>
+                                <span>Bulk Actions</span>
+                            </button>
                             <button class="btn btn-outline" id="export-agents">
                                 <i class="fas fa-download"></i>
                                 <span>Export</span>
@@ -289,23 +501,68 @@
                             </button>
                         </div>
                     </div>
+                    <div class="agents-controls">
+                        <div class="controls-left">
+                            <div class="search-box">
+                                <input
+                                    type="text"
+                                    id="agent-search"
+                                    placeholder="Search agents..."
+                                    class="form-input"
+                                />
+                                <i class="fas fa-search"></i>
+                            </div>
+                            <div class="filter-dropdown">
+                                <select id="agent-filter" class="form-select">
+                                    <option value="all">All Agents</option>
+                                    <option value="active">Active Only</option>
+                                    <option value="working">Working</option>
+                                    <option value="idle">Idle</option>
+                                    <option value="error">Error</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="controls-right">
+                            <div class="view-toggle">
+                                <button
+                                    class="view-toggle-btn active"
+                                    data-view="grid"
+                                >
+                                    <i class="fas fa-th-large"></i>
+                                </button>
+                                <button
+                                    class="view-toggle-btn"
+                                    data-view="list"
+                                >
+                                    <i class="fas fa-list"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                     <div class="agents-grid" id="agents-grid">
-                        <!-- Agents will be populated here -->
+                        <!-- Enhanced agent cards will be populated here -->
                     </div>
                 </div>
 
-                <!-- Communications View -->
+                <!-- Enhanced Communications View -->
                 <div id="communications-view" class="view">
                     <div class="communications-container redesigned">
                         <div class="communications-header">
                             <div class="view-title">
                                 <h2>Agent Communications</h2>
                                 <p>
-                                    Specification-driven, real-time agent
-                                    messaging and system log
+                                    Real-time messaging, system logs, and
+                                    communication analytics
                                 </p>
                             </div>
                             <div class="communications-actions">
+                                <button
+                                    class="btn btn-outline"
+                                    id="communication-analytics"
+                                >
+                                    <i class="fas fa-chart-line"></i>
+                                    <span>Analytics</span>
+                                </button>
                                 <button
                                     class="btn btn-outline"
                                     id="export-messages"
@@ -340,11 +597,17 @@
                                             <option value="task_assignment">
                                                 Task Assignments
                                             </option>
+                                            <option value="task_completion">
+                                                Task Completions
+                                            </option>
                                             <option value="status_update">
                                                 Status Updates
                                             </option>
                                             <option value="coordination">
                                                 Coordination
+                                            </option>
+                                            <option value="error">
+                                                Errors
                                             </option>
                                         </select>
                                     </div>
@@ -353,17 +616,10 @@
                                     id="messages-list"
                                     class="messages-list"
                                 ></div>
-                                <!-- Update the message composer in the communications tab -->
                                 <div class="message-composer">
                                     <div class="composer-header">
                                         <h3>Send Manual Instruction</h3>
-                                        <p
-                                            style="
-                                                font-size: 0.95em;
-                                                color: #888;
-                                                margin-top: 0.25em;
-                                            "
-                                        >
+                                        <p>
                                             Send a direct instruction or manual
                                             task assignment to any agent.
                                         </p>
@@ -379,6 +635,31 @@
                                                     class="form-select"
                                                 ></select>
                                             </div>
+                                            <div class="form-group">
+                                                <label for="message-priority"
+                                                    >Priority</label
+                                                >
+                                                <select
+                                                    id="message-priority"
+                                                    class="form-select"
+                                                >
+                                                    <option value="low">
+                                                        Low
+                                                    </option>
+                                                    <option
+                                                        value="normal"
+                                                        selected
+                                                    >
+                                                        Normal
+                                                    </option>
+                                                    <option value="high">
+                                                        High
+                                                    </option>
+                                                    <option value="urgent">
+                                                        Urgent
+                                                    </option>
+                                                </select>
+                                            </div>
                                         </div>
                                         <div class="form-group">
                                             <label for="message-content"
@@ -388,6 +669,7 @@
                                                 id="message-content"
                                                 placeholder="Type your instruction or task..."
                                                 rows="3"
+                                                class="form-textarea"
                                             ></textarea>
                                         </div>
                                         <div class="form-actions">
@@ -398,7 +680,14 @@
                                                 <i
                                                     class="fas fa-paper-plane"
                                                 ></i>
-                                                <span>Send as User</span>
+                                                <span>Send Message</span>
+                                            </button>
+                                            <button
+                                                id="save-draft"
+                                                class="btn btn-outline"
+                                            >
+                                                <i class="fas fa-save"></i>
+                                                <span>Save Draft</span>
                                             </button>
                                         </div>
                                     </div>
@@ -410,6 +699,17 @@
                                         <i class="fas fa-terminal"></i> System
                                         Log
                                     </h3>
+                                    <div class="log-controls">
+                                        <button
+                                            class="btn-icon"
+                                            id="log-follow"
+                                        >
+                                            <i class="fas fa-arrow-down"></i>
+                                        </button>
+                                        <button class="btn-icon" id="log-clear">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </div>
                                 </div>
                                 <div
                                     id="detailed-log"
@@ -420,72 +720,266 @@
                     </div>
                 </div>
 
-                <!-- Projects View -->
-                <div id="projects-view" class="view">
-                    <div class="projects-container">
-                        <div class="view-header">
-                            <div class="view-title">
-                                <h2>Project Management</h2>
-                                <p>
-                                    Track and manage your development projects
-                                </p>
-                            </div>
+                <!-- Enhanced Files View -->
+                <div id="files-view" class="view">
+                    <div class="view-header">
+                        <div class="view-title">
+                            <h2>Project Files</h2>
+                            <p>
+                                Browse, preview, and manage generated project
+                                files
+                            </p>
                         </div>
-
-                        <div class="projects-content">
-                            <div class="project-timeline">
-                                <div class="timeline-header">
-                                    <h3>Project Timeline</h3>
-                                </div>
-                                <div
-                                    id="timeline-container"
-                                    class="timeline-container"
-                                >
-                                    <!-- Timeline events will be populated here -->
+                        <div class="view-actions">
+                            <button id="refresh-files" class="btn btn-outline">
+                                <i class="fas fa-refresh"></i>
+                                <span>Refresh</span>
+                            </button>
+                            <button
+                                id="download-project"
+                                class="btn btn-primary"
+                            >
+                                <i class="fas fa-download"></i>
+                                <span>Download Project</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="files-container">
+                        <div class="files-sidebar">
+                            <div class="sidebar-header">
+                                <h3>Project Structure</h3>
+                                <button class="btn-icon" id="collapse-all">
+                                    <i class="fas fa-compress"></i>
+                                </button>
+                            </div>
+                            <div
+                                id="file-tree-container"
+                                class="file-tree-container"
+                            ></div>
+                        </div>
+                        <div class="files-main">
+                            <div class="file-preview-header">
+                                <h3 id="current-file-name">
+                                    Select a file to preview
+                                </h3>
+                                <div class="file-actions">
+                                    <button
+                                        class="btn-icon"
+                                        id="copy-file-content"
+                                    >
+                                        <i class="fas fa-copy"></i>
+                                    </button>
+                                    <button class="btn-icon" id="download-file">
+                                        <i class="fas fa-download"></i>
+                                    </button>
                                 </div>
                             </div>
-
-                            <div class="project-insights">
-                                <div class="insight-card">
-                                    <div class="insight-header">
-                                        <h3>Performance Insights</h3>
-                                    </div>
-                                    <div class="insight-content">
-                                        <div class="insight-metric">
-                                            <div class="metric-icon">
-                                                <i class="fas fa-clock"></i>
-                                            </div>
-                                            <div class="metric-info">
-                                                <div class="metric-value">
-                                                    2.5 hrs
-                                                </div>
-                                                <div class="metric-label">
-                                                    Avg. Task Time
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div class="insight-metric">
-                                            <div class="metric-icon">
-                                                <i class="fas fa-comments"></i>
-                                            </div>
-                                            <div class="metric-info">
-                                                <div class="metric-value">
-                                                    24
-                                                </div>
-                                                <div class="metric-label">
-                                                    Messages/Hour
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
+                            <div
+                                id="file-preview-container"
+                                class="file-preview-container"
+                            >
+                                <div class="file-preview-placeholder">
+                                    <i class="fas fa-file-code"></i>
+                                    <p>
+                                        Select a file from the tree to view its
+                                        contents
+                                    </p>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
+
+                <!-- New Performance View -->
+                <div id="performance-view" class="view">
+                    <div class="view-header">
+                        <div class="view-title">
+                            <h2>Performance Analytics</h2>
+                            <p>
+                                Monitor system performance, agent efficiency,
+                                and optimization opportunities
+                            </p>
+                        </div>
+                        <div class="view-actions">
+                            <button
+                                id="generate-report"
+                                class="btn btn-outline"
+                            >
+                                <i class="fas fa-file-pdf"></i>
+                                <span>Generate Report</span>
+                            </button>
+                            <button
+                                id="optimize-system"
+                                class="btn btn-primary"
+                            >
+                                <i class="fas fa-rocket"></i>
+                                <span>Optimize</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="performance-dashboard">
+                        <div class="performance-grid">
+                            <div class="performance-card">
+                                <div class="card-header">
+                                    <h3>System Performance</h3>
+                                </div>
+                                <div class="card-content">
+                                    <div
+                                        id="system-performance-chart"
+                                        class="chart-container"
+                                    ></div>
+                                </div>
+                            </div>
+                            <div class="performance-card">
+                                <div class="card-header">
+                                    <h3>Agent Efficiency</h3>
+                                </div>
+                                <div class="card-content">
+                                    <div
+                                        id="agent-efficiency-chart"
+                                        class="chart-container"
+                                    ></div>
+                                </div>
+                            </div>
+                            <div class="performance-card">
+                                <div class="card-header">
+                                    <h3>Resource Usage</h3>
+                                </div>
+                                <div class="card-content">
+                                    <div
+                                        id="resource-usage-chart"
+                                        class="chart-container"
+                                    ></div>
+                                </div>
+                            </div>
+                            <div class="performance-card">
+                                <div class="card-header">
+                                    <h3>Optimization Recommendations</h3>
+                                </div>
+                                <div class="card-content">
+                                    <div
+                                        id="optimization-recommendations"
+                                        class="recommendations-list"
+                                    ></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- New Logs View -->
+                <div id="logs-view" class="view">
+                    <div class="view-header">
+                        <div class="view-title">
+                            <h2>System Logs</h2>
+                            <p>
+                                Comprehensive system logging and debugging
+                                information
+                            </p>
+                        </div>
+                        <div class="view-actions">
+                            <button
+                                id="export-all-logs"
+                                class="btn btn-outline"
+                            >
+                                <i class="fas fa-download"></i>
+                                <span>Export All</span>
+                            </button>
+                            <button
+                                id="clear-all-logs"
+                                class="btn btn-secondary"
+                            >
+                                <i class="fas fa-trash-alt"></i>
+                                <span>Clear All</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="logs-container">
+                        <div class="logs-sidebar">
+                            <div class="log-filters">
+                                <h3>Log Filters</h3>
+                                <div class="filter-group">
+                                    <label>Level:</label>
+                                    <select
+                                        id="log-level-filter"
+                                        class="form-select"
+                                    >
+                                        <option value="all">All Levels</option>
+                                        <option value="debug">Debug</option>
+                                        <option value="info">Info</option>
+                                        <option value="warning">Warning</option>
+                                        <option value="error">Error</option>
+                                    </select>
+                                </div>
+                                <div class="filter-group">
+                                    <label>Source:</label>
+                                    <select
+                                        id="log-source-filter"
+                                        class="form-select"
+                                    >
+                                        <option value="all">All Sources</option>
+                                        <option value="system">System</option>
+                                        <option value="agent">Agents</option>
+                                        <option value="api">API</option>
+                                        <option value="performance">
+                                            Performance
+                                        </option>
+                                    </select>
+                                </div>
+                                <div class="filter-group">
+                                    <label>Time Range:</label>
+                                    <select
+                                        id="log-time-filter"
+                                        class="form-select"
+                                    >
+                                        <option value="all">All Time</option>
+                                        <option value="1h">Last Hour</option>
+                                        <option value="6h">Last 6 Hours</option>
+                                        <option value="24h">
+                                            Last 24 Hours
+                                        </option>
+                                        <option value="7d">Last 7 Days</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="logs-main">
+                            <div class="logs-header">
+                                <div class="search-box">
+                                    <input
+                                        type="text"
+                                        id="log-search"
+                                        placeholder="Search logs..."
+                                        class="form-input"
+                                    />
+                                    <i class="fas fa-search"></i>
+                                </div>
+                                <div class="log-controls">
+                                    <button
+                                        class="btn-icon"
+                                        id="auto-scroll"
+                                        title="Auto-scroll to bottom"
+                                    >
+                                        <i class="fas fa-arrow-down"></i>
+                                    </button>
+                                    <button
+                                        class="btn-icon"
+                                        id="pause-logs"
+                                        title="Pause log updates"
+                                    >
+                                        <i class="fas fa-pause"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="system-logs" class="logs-display"></div>
+                        </div>
+                    </div>
+                </div>
             </main>
 
-            <!-- Modals -->
+            <!-- Enhanced Modals -->
+
+            <!-- Add Agent Modal -->
             <div id="add-agent-modal" class="modal">
                 <div class="modal-backdrop" onclick="closeModal()"></div>
                 <div class="modal-content">
@@ -496,67 +990,100 @@
                         </button>
                     </div>
                     <div class="modal-body">
-                        <div class="form-group">
-                            <label for="agent-name">Agent Name</label>
-                            <input
-                                type="text"
-                                id="agent-name"
-                                class="form-input"
-                                placeholder="Enter agent name"
-                            />
-                        </div>
-                        <div class="form-group">
-                            <label for="agent-role">Role</label>
-                            <select id="agent-role" class="form-select">
-                                <option value="">Select role...</option>
-                                <option value="Frontend Developer">
-                                    Frontend Developer
-                                </option>
-                                <option value="Backend Developer">
-                                    Backend Developer
-                                </option>
-                                <option value="DevOps Engineer">
-                                    DevOps Engineer
-                                </option>
-                                <option value="QA Engineer">QA Engineer</option>
-                                <option value="Product Manager">
-                                    Product Manager
-                                </option>
-                                <option value="Data Scientist">
-                                    Data Scientist
-                                </option>
-                                <option value="Security Engineer">
-                                    Security Engineer
-                                </option>
-                                <option value="Custom">Custom Role</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="agent-type">Type</label>
-                            <select id="agent-type" class="form-select">
-                                <option value="worker">Worker</option>
-                                <option value="manager">Manager</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="agent-specialty"
-                                >Specialty & Skills</label
-                            >
-                            <textarea
-                                id="agent-specialty"
-                                class="form-textarea"
-                                placeholder="Describe the agent's expertise, skills, and responsibilities"
-                                rows="4"
-                            ></textarea>
-                        </div>
-                        <div class="form-group">
-                            <label for="agent-manager"
-                                >Manager (Optional)</label
-                            >
-                            <select id="agent-manager" class="form-select">
-                                <option value="">No manager</option>
-                            </select>
-                        </div>
+                        <form id="agent-form">
+                            <div class="form-group">
+                                <label for="agent-name">Agent Name</label>
+                                <input
+                                    type="text"
+                                    id="agent-name"
+                                    class="form-input"
+                                    placeholder="Enter agent name"
+                                    required
+                                />
+                            </div>
+                            <div class="form-group">
+                                <label for="agent-role">Role</label>
+                                <select
+                                    id="agent-role"
+                                    class="form-select"
+                                    required
+                                >
+                                    <option value="">Select role...</option>
+                                    <option value="Frontend Developer">
+                                        Frontend Developer
+                                    </option>
+                                    <option value="Backend Developer">
+                                        Backend Developer
+                                    </option>
+                                    <option value="DevOps Engineer">
+                                        DevOps Engineer
+                                    </option>
+                                    <option value="QA Engineer">
+                                        QA Engineer
+                                    </option>
+                                    <option value="Product Manager">
+                                        Product Manager
+                                    </option>
+                                    <option value="Data Scientist">
+                                        Data Scientist
+                                    </option>
+                                    <option value="Security Engineer">
+                                        Security Engineer
+                                    </option>
+                                    <option value="UI/UX Designer">
+                                        UI/UX Designer
+                                    </option>
+                                    <option value="Database Administrator">
+                                        Database Administrator
+                                    </option>
+                                    <option value="Custom">Custom Role</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="agent-type">Type</label>
+                                <select
+                                    id="agent-type"
+                                    class="form-select"
+                                    required
+                                >
+                                    <option value="worker">Worker</option>
+                                    <option value="manager">Manager</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="agent-specialty"
+                                    >Specialty & Skills</label
+                                >
+                                <textarea
+                                    id="agent-specialty"
+                                    class="form-textarea"
+                                    placeholder="Describe the agent's expertise, skills, and responsibilities"
+                                    rows="4"
+                                    required
+                                ></textarea>
+                            </div>
+                            <div class="form-group">
+                                <label for="agent-manager"
+                                    >Manager (Optional)</label
+                                >
+                                <select id="agent-manager" class="form-select">
+                                    <option value="">No manager</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="agent-priority"
+                                    >Priority Level</label
+                                >
+                                <select id="agent-priority" class="form-select">
+                                    <option value="low">Low</option>
+                                    <option value="normal" selected>
+                                        Normal
+                                    </option>
+                                    <option value="high">High</option>
+                                    <option value="critical">Critical</option>
+                                </select>
+                            </div>
+                        </form>
                     </div>
                     <div class="modal-footer">
                         <button
@@ -566,7 +1093,8 @@
                             Cancel
                         </button>
                         <button class="btn btn-primary" onclick="createAgent()">
-                            Create Agent
+                            <i class="fas fa-plus"></i>
+                            <span>Create Agent</span>
                         </button>
                     </div>
                 </div>
@@ -583,17 +1111,84 @@
                         </button>
                     </div>
                     <div class="modal-body">
-                        <div id="agent-details-content">
-                            <!-- Agent details will be populated here -->
-                        </div>
+                        <div id="agent-details-content"></div>
                     </div>
                     <div class="modal-footer">
+                        <button
+                            class="btn btn-outline"
+                            onclick="editCurrentAgent()"
+                        >
+                            <i class="fas fa-edit"></i>
+                            <span>Edit Agent</span>
+                        </button>
                         <button
                             class="btn btn-danger"
                             onclick="deleteCurrentAgent()"
                         >
                             <i class="fas fa-trash-alt"></i>
                             <span>Delete Agent</span>
+                        </button>
+                        <button
+                            class="btn btn-secondary"
+                            onclick="closeModal()"
+                        >
+                            Close
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Performance Modal -->
+            <div id="performance-modal" class="modal">
+                <div class="modal-backdrop" onclick="closeModal()"></div>
+                <div class="modal-content large">
+                    <div class="modal-header">
+                        <h3>Performance Report</h3>
+                        <button class="modal-close" onclick="closeModal()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="performance-content"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button
+                            class="btn btn-outline"
+                            onclick="exportPerformanceReport()"
+                        >
+                            <i class="fas fa-download"></i>
+                            <span>Export Report</span>
+                        </button>
+                        <button
+                            class="btn btn-secondary"
+                            onclick="closeModal()"
+                        >
+                            Close
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Code Preview Modal -->
+            <div id="code-preview-modal" class="modal">
+                <div class="modal-backdrop" onclick="closeModal()"></div>
+                <div class="modal-content large">
+                    <div class="modal-header">
+                        <h3>Code Preview</h3>
+                        <button class="modal-close" onclick="closeModal()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="code-preview-content"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button
+                            class="btn btn-outline"
+                            onclick="copyCodeToClipboard()"
+                        >
+                            <i class="fas fa-copy"></i>
+                            <span>Copy Code</span>
                         </button>
                         <button
                             class="btn btn-secondary"
@@ -617,62 +1212,35 @@
                 </div>
             </div>
 
-            <!-- Toast Notifications -->
-            <div id="toast-container" class="toast-container"></div>
+            <!-- Notification Container -->
+            <div
+                id="notification-container"
+                class="notification-container"
+            ></div>
         </div>
 
         <!-- Scripts -->
         <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
-        <script src="{{ url_for('static', filename='js/app.js') }}"></script>
-        <!-- Manual Task Assignment Modal -->
-        <div id="manual-task-modal" class="modal">
-            <div class="modal-backdrop" onclick="closeManualTaskModal()"></div>
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h3>Manual Task Assignment</h3>
-                    <button
-                        class="modal-close"
-                        onclick="closeManualTaskModal()"
-                    >
-                        <i class="fas fa-times"></i>
-                    </button>
-                </div>
-                <div class="modal-body">
-                    <div class="form-group">
-                        <label for="manual-task-agent">Select Agent</label>
-                        <select
-                            id="manual-task-agent"
-                            class="form-select"
-                        ></select>
-                    </div>
-                    <div class="form-group">
-                        <label for="manual-task-content">Task</label>
-                        <textarea
-                            id="manual-task-content"
-                            class="form-textarea"
-                            rows="4"
-                            placeholder="Enter the task to assign..."
-                        ></textarea>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button
-                        class="btn btn-secondary"
-                        onclick="closeManualTaskModal()"
-                    >
-                        Cancel
-                    </button>
-                    <button class="btn btn-primary" id="assign-task-confirm">
-                        Assign Task
-                    </button>
-                </div>
-            </div>
-        </div>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+        <script src="../static/js/app.js"></script>
+
+        <!-- Service Worker Registration -->
         <script>
-            function closeManualTaskModal() {
-                document
-                    .getElementById("manual-task-modal")
-                    .classList.remove("active");
+            if ("serviceWorker" in navigator) {
+                window.addEventListener("load", function () {
+                    navigator.serviceWorker
+                        .register("/static/sw.js")
+                        .then(function (registration) {
+                            console.log("SW registered: ", registration);
+                        })
+                        .catch(function (registrationError) {
+                            console.log(
+                                "SW registration failed: ",
+                                registrationError
+                            );
+                        });
+                });
             }
         </script>
     </body>

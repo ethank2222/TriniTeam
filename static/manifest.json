@@ -1,0 +1,103 @@
+{
+    "name": "Enhanced Multi-Agent Intelligence Platform",
+    "short_name": "MultiAgent Pro",
+    "description": "AI-powered development coordination with advanced analytics and real-time collaboration",
+    "version": "1.0.0",
+    "start_url": "/",
+    "display": "standalone",
+    "orientation": "portrait-primary",
+    "theme_color": "#0ea5e9",
+    "background_color": "#ffffff",
+    "lang": "en",
+    "scope": "/",
+    "categories": ["productivity", "developer", "business", "utilities"],
+    "screenshots": [
+        {
+            "src": "/static/screenshots/desktop-dashboard.png",
+            "type": "image/png",
+            "sizes": "1920x1080",
+            "form_factor": "wide",
+            "label": "Dashboard view showing system metrics and agent status"
+        },
+        {
+            "src": "/static/screenshots/mobile-agents.png",
+            "type": "image/png",
+            "sizes": "390x844",
+            "form_factor": "narrow",
+            "label": "Mobile view of agent management interface"
+        }
+    ],
+    "related_applications": [
+        {
+            "platform": "web",
+            "url": "https://multiagent.example.com/",
+            "id": "com.example.multiagent"
+        }
+    ],
+    "prefer_related_applications": false,
+    "share_target": {
+        "action": "/api/share",
+        "method": "POST",
+        "enctype": "multipart/form-data",
+        "params": {
+            "title": "title",
+            "text": "text",
+            "url": "url",
+            "files": [
+                {
+                    "name": "file",
+                    "accept": [
+                        "text/*",
+                        "application/json",
+                        "application/javascript",
+                        "text/css",
+                        "text/html",
+                        "text/markdown"
+                    ]
+                }
+            ]
+        }
+    },
+    "protocol_handlers": [
+        {
+            "protocol": "multiagent",
+            "url": "/?protocol=%s"
+        }
+    ],
+    "file_handlers": [
+        {
+            "action": "/file-handler",
+            "accept": {
+                "application/json": [".json"],
+                "text/javascript": [".js"],
+                "text/css": [".css"],
+                "text/html": [".html"],
+                "text/markdown": [".md"]
+            }
+        }
+    ],
+    "launch_handler": {
+        "client_mode": "navigate-existing"
+    },
+    "edge_side_panel": {
+        "preferred_width": 400
+    },
+    "display_override": [
+        "window-controls-overlay",
+        "standalone",
+        "minimal-ui",
+        "browser"
+    ],
+    "handle_links": "preferred",
+    "capture_links": "existing-client-navigate",
+    "widgets": [
+        {
+            "name": "System Status",
+            "short_name": "Status",
+            "description": "Quick view of system metrics",
+            "tag": "system-status",
+            "ms_ac_template": "adaptive-card.json",
+            "data": "/api/widget/status"
+        }
+    ]
+}

@@ -11,8 +11,6 @@ const STATIC_FILES = [
     "/static/css/style.css",
     "/static/js/app.js",
     "/static/manifest.json",
-    "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap",
-    "https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500;600&display=swap",
     "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css",
     "https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js",
     "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js",

@@ -1,152 +1,198 @@
 // Enhanced Multi-Agent System Frontend Application
 class EnhancedMultiAgentApp {
     constructor() {
-        this.agents = {};
-        this.messages = [];
-        this.systemRunning = false;
-        this.currentProject = null;
-        this.socket = null;
-        this.taskQueue = {
-            pending: 0,
-            in_progress: 0,
-            completed: 0,
-            failed: 0,
+        this.state = {
+            agents: {},
+            messages: [],
+            systemRunning: false,
+            currentProject: null,
+            taskQueue: {
+                pending: 0,
+                in_progress: 0,
+                completed: 0,
+                failed: 0,
+            },
+            metrics: {},
+            currentView: "dashboard",
+            notifications: [],
         };
-        this.performanceMetrics = {};
-        this.realTimeUpdates = true;
-        this.notificationQueue = [];
-        this.codePreview = null;
-        this.projectStructure = null;
+
+        this.socket = null;
+        this.updateInterval = null;
+        this.connected = false;
+        this.retryCount = 0;
+        this.maxRetries = 5;
 
         this.init();
     }
 
     init() {
-        this.setupSocketIO();
+        console.log("🚀 Initializing Enhanced Multi-Agent System");
         this.setupEventListeners();
+        this.setupSocketIO();
         this.setupNavigation();
         this.setupNotifications();
-        this.loadAgents();
-        this.startMetricsPolling();
         this.setupKeyboardShortcuts();
-        this.setupProgressTracking();
+        this.loadInitialData();
+        this.startPeriodicUpdates();
     }
 
     setupSocketIO() {
-        this.socket = io();
+        this.socket = io({
+            transports: ["websocket", "polling"],
+            upgrade: true,
+            rememberUpgrade: true,
+        });
 
         this.socket.on("connect", () => {
-            console.log("✅ Connected to enhanced server");
-            this.updateSystemStatus("Connected", "success");
-            this.showNotification("Connected to enhanced system", "success");
+            console.log("✅ Connected to server");
+            this.connected = true;
+            this.retryCount = 0;
+            this.updateConnectionStatus(true);
+            this.showNotification("Connected to server", "success");
         });
 
         this.socket.on("disconnect", () => {
             console.log("❌ Disconnected from server");
-            this.updateSystemStatus("Disconnected", "error");
+            this.connected = false;
+            this.updateConnectionStatus(false);
             this.showNotification("Connection lost", "error");
+            this.attemptReconnection();
         });
 
-        this.socket.on("agents_updated", (data) => {
-            this.agents = data.agents;
-            this.messages = data.messages || [];
-            this.taskQueue = data.tasks || this.taskQueue;
-            this.updateUI();
-            this.updateTaskQueueDisplay();
+        this.socket.on("system_update", (data) => {
+            this.handleSystemUpdate(data);
         });
 
-        this.socket.on("task_progress", (data) => {
-            this.updateTaskProgress(data);
+        this.socket.on("project_started", (data) => {
+            this.handleProjectStarted(data);
         });
 
-        this.socket.on("code_generated", (data) => {
-            this.handleCodeGeneration(data);
+        this.socket.on("project_stopped", () => {
+            this.handleProjectStopped();
         });
 
-        this.socket.on("project_completed", (data) => {
-            this.handleProjectCompletion(data);
+        this.socket.on("message_sent", (message) => {
+            this.handleNewMessage(message);
         });
 
-        this.socket.on("agent_error", (data) => {
-            this.handleAgentError(data);
+        this.socket.on("project_reviewed", (data) => {
+            this.handleProjectReviewed(data);
+        });
+
+        this.socket.on("connect_error", (error) => {
+            console.error("Connection error:", error);
+            this.updateConnectionStatus(false);
         });
     }
 
+    attemptReconnection() {
+        if (this.retryCount < this.maxRetries) {
+            this.retryCount++;
+            const delay = Math.min(1000 * Math.pow(2, this.retryCount), 30000);
+
+            setTimeout(() => {
+                console.log(
+                    `🔄 Attempting reconnection (${this.retryCount}/${this.maxRetries})`
+                );
+                this.socket.connect();
+            }, delay);
+        } else {
+            this.showNotification(
+                "Connection failed. Please refresh the page.",
+                "error",
+                0
+            );
+        }
+    }
+
     setupEventListeners() {
-        // Enhanced project controls
+        // Project controls
         const startBtn = document.getElementById("start-project");
+        const stopBtn = document.getElementById("stop-project");
+        const pauseBtn = document.getElementById("pause-project");
+        const downloadBtn = document.getElementById("download-project");
+
         if (startBtn) {
-            startBtn.addEventListener("click", () => {
+            startBtn.addEventListener("click", () => this.startProject());
+        }
+        if (stopBtn) {
+            stopBtn.addEventListener("click", () => this.stopProject());
+        }
+        if (pauseBtn) {
+            pauseBtn.addEventListener("click", () => this.pauseProject());
+        }
+        if (downloadBtn) {
+            downloadBtn.addEventListener("click", () => this.downloadProject());
+        }
+
+        // Template buttons
+        document.querySelectorAll(".template-btn").forEach((btn) => {
+            btn.addEventListener("click", () => {
+                const template = btn.dataset.template;
+                this.loadTemplate(template);
+            });
+        });
+
+        // Action buttons
+        const refreshBtn = document.getElementById("refresh-dashboard");
+        const exportBtn = document.getElementById("export-logs");
+        const performanceBtn = document.getElementById("performance-report");
+
+        if (refreshBtn) {
+            refreshBtn.addEventListener("click", () => this.refreshDashboard());
+        }
+        if (exportBtn) {
+            exportBtn.addEventListener("click", () => this.exportLogs());
+        }
+        if (performanceBtn) {
+            performanceBtn.addEventListener("click", () =>
+                this.showPerformanceReport()
+            );
+        }
+
+        // Form submissions
+        const projectForm = document.getElementById("project-form");
+        if (projectForm) {
+            projectForm.addEventListener("submit", (e) => {
+                e.preventDefault();
                 this.startProject();
             });
         }
 
-        const stopBtn = document.getElementById("stop-project");
-        if (stopBtn) {
-            stopBtn.addEventListener("click", () => {
-                this.stopProject();
+        // Search and filters
+        const agentSearch = document.getElementById("agent-search");
+        const agentFilter = document.getElementById("agent-filter");
+        const messageFilter = document.getElementById("message-filter");
+        const refreshFiles = document.getElementById("refresh-files");
+
+        if (agentSearch) {
+            agentSearch.addEventListener("input", (e) => {
+                this.filterAgents(e.target.value);
+            });
+        }
+        if (agentFilter) {
+            agentFilter.addEventListener("change", (e) => {
+                this.filterAgents(null, e.target.value);
+            });
+        }
+        if (messageFilter) {
+            messageFilter.addEventListener("change", (e) => {
+                this.filterMessages(e.target.value);
+            });
+        }
+        if (refreshFiles) {
+            refreshFiles.addEventListener("click", () => {
+                this.loadProjectFiles();
             });
         }
 
-        const pauseBtn = document.getElementById("pause-project");
-        if (pauseBtn) {
-            pauseBtn.addEventListener("click", () => {
-                this.pauseProject();
+        const downloadAllFiles = document.getElementById("download-all-files");
+        if (downloadAllFiles) {
+            downloadAllFiles.addEventListener("click", () => {
+                this.downloadProject();
             });
         }
-
-        // Enhanced agent management
-        const addAgentBtn = document.getElementById("add-agent");
-        if (addAgentBtn) {
-            addAgentBtn.addEventListener("click", () => {
-                this.showAddAgentModal();
-            });
-        }
-
-        const bulkActionsBtn = document.getElementById("bulk-actions");
-        if (bulkActionsBtn) {
-            bulkActionsBtn.addEventListener("click", () => {
-                this.showBulkActionsModal();
-            });
-        }
-
-        // Real-time controls
-        const toggleRealtimeBtn = document.getElementById("toggle-realtime");
-        if (toggleRealtimeBtn) {
-            toggleRealtimeBtn.addEventListener("click", () => {
-                this.toggleRealTimeUpdates();
-            });
-        }
-
-        const exportLogsBtn = document.getElementById("export-logs");
-        if (exportLogsBtn) {
-            exportLogsBtn.addEventListener("click", () => {
-                this.exportLogs();
-            });
-        }
-
-        // Performance monitoring
-        const perfReportBtn = document.getElementById("performance-report");
-        if (perfReportBtn) {
-            perfReportBtn.addEventListener("click", () => {
-                this.showPerformanceReport();
-            });
-        }
-
-        // Code preview
-        const previewCodeBtn = document.getElementById("preview-code");
-        if (previewCodeBtn) {
-            previewCodeBtn.addEventListener("click", () => {
-                this.showCodePreview();
-            });
-        }
-
-        // Modal controls
-        document.querySelectorAll(".modal-close").forEach((btn) => {
-            btn.addEventListener("click", () => {
-                this.closeModal();
-            });
-        });
     }
 
     setupNavigation() {
@@ -155,7 +201,6 @@ class EnhancedMultiAgentApp {
                 e.preventDefault();
                 const viewName = tab.dataset.view;
                 this.switchView(viewName);
-                this.updateActiveTab(tab);
             });
         });
     }
@@ -171,161 +216,224 @@ class EnhancedMultiAgentApp {
     }
 
     setupKeyboardShortcuts() {
-        const shortcuts = {
-            "ctrl+enter": () => this.startProject(),
-            "ctrl+space": () => this.pauseProject(),
-            "ctrl+shift+c": () => this.showCodePreview(),
-            "ctrl+shift+p": () => this.showPerformanceReport(),
-            "ctrl+shift+a": () => this.showAddAgentModal(),
-            escape: () => this.closeModal(),
-        };
-
         document.addEventListener("keydown", (e) => {
-            const key = [
-                e.ctrlKey ? "ctrl" : "",
-                e.shiftKey ? "shift" : "",
-                e.altKey ? "alt" : "",
-                e.key.toLowerCase(),
-            ]
-                .filter((k) => k)
-                .join("+");
-
-            if (shortcuts[key]) {
+            // Ctrl+Enter to start project
+            if (e.ctrlKey && e.key === "Enter") {
                 e.preventDefault();
-                shortcuts[key]();
+                this.startProject();
+            }
+            // Escape to close modals
+            if (e.key === "Escape") {
+                this.closeAllModals();
+            }
+            // Ctrl+R to refresh dashboard
+            if (e.ctrlKey && e.key === "r") {
+                e.preventDefault();
+                this.refreshDashboard();
             }
         });
     }
 
-    setupProgressTracking() {
-        // Create progress bar element
-        const progressBar = document.createElement("div");
-        progressBar.id = "project-progress";
-        progressBar.className = "project-progress hidden";
-        progressBar.innerHTML = `
-            <div class="progress-bar">
-                <div class="progress-fill" style="width: 0%"></div>
-            </div>
-            <div class="progress-text">Starting project...</div>
-        `;
-        document.querySelector(".header").appendChild(progressBar);
-    }
-
-    async loadAgents() {
+    async loadInitialData() {
         try {
             const response = await fetch("/api/agents");
             const data = await response.json();
-            this.agents = data.agents;
-            this.systemRunning = data.system_running;
-            this.taskQueue = data.task_queue_status || this.taskQueue;
-            this.updateUI();
-            this.updateTaskQueueDisplay();
+
+            if (data.success) {
+                this.state.agents = data.agents;
+                this.state.systemRunning = data.system_running;
+                this.state.currentProject = data.current_project;
+                this.state.taskQueue = data.task_queue;
+                this.updateUI();
+            } else {
+                throw new Error(data.error || "Failed to load agents");
+            }
         } catch (error) {
-            console.error("Failed to load agents:", error);
-            this.showNotification("Failed to load agents", "error");
+            console.error("Failed to load initial data:", error);
+            this.showNotification("Failed to load initial data", "error");
         }
     }
 
+    startPeriodicUpdates() {
+        this.updateInterval = setInterval(() => {
+            if (this.connected) {
+                this.loadMetrics();
+
+                // Refresh files if files view is active
+                if (this.state.currentView === "files") {
+                    this.loadProjectFiles();
+                }
+            }
+        }, 5000); // Update every 5 seconds
+    }
+
+    async loadMetrics() {
+        try {
+            const response = await fetch("/api/metrics");
+            const data = await response.json();
+
+            if (data.success) {
+                this.state.metrics = data.metrics;
+                this.updateMetricsDisplay();
+            }
+        } catch (error) {
+            console.error("Failed to load metrics:", error);
+        }
+    }
+
+    handleSystemUpdate(data) {
+        this.state.agents = data.agents;
+        this.state.messages = data.messages;
+        this.state.taskQueue = data.task_queue;
+        this.state.systemRunning = data.system_running;
+        this.state.currentProject = data.current_project;
+        this.state.metrics = data.metrics;
+
+        this.updateUI();
+    }
+
+    handleProjectStarted(data) {
+        this.state.currentProject = data.project;
+        this.state.systemRunning = true;
+        this.state.agents = data.agents;
+
+        this.updateProjectControls();
+        this.updateUI();
+        this.showNotification("Project started successfully!", "success");
+    }
+
+    handleProjectStopped() {
+        this.state.systemRunning = false;
+        this.updateProjectControls();
+        this.showNotification("Project stopped", "info");
+    }
+
+    handleNewMessage(message) {
+        this.state.messages.unshift(message);
+
+        // Keep only last 100 messages
+        if (this.state.messages.length > 100) {
+            this.state.messages = this.state.messages.slice(0, 100);
+        }
+
+        this.updateMessagesDisplay();
+
+        // Show notification for important messages
+        if (message.type === "task_completion" || message.type === "error") {
+            this.showNotification(
+                `${this.getAgentName(
+                    message.from_agent_id
+                )}: ${message.content.substring(0, 50)}...`,
+                message.type === "error" ? "error" : "info"
+            );
+        }
+    }
+
+    handleProjectReviewed(data) {
+        this.showNotification(
+            `Project completed with ${data.files_count} files! Ready for download.`,
+            "success"
+        );
+        // Refresh files display
+        this.loadProjectFiles();
+    }
+
     updateUI() {
-        this.updateAgentsView();
-        this.updateMessagesView();
-        this.updateSystemMetrics();
+        this.updateAgentsDisplay();
+        this.updateMessagesDisplay();
+        this.updateTaskQueueDisplay();
+        this.updateMetricsDisplay();
         this.updateProjectStatus();
     }
 
-    updateAgentsView() {
-        const grid = document.getElementById("agents-grid");
-        if (!grid) return;
+    updateAgentsDisplay() {
+        const agentsGrid = document.getElementById("agents-grid");
+        if (!agentsGrid) return;
 
-        grid.innerHTML = "";
+        agentsGrid.innerHTML = "";
 
-        Object.values(this.agents).forEach((agent) => {
-            const card = this.createEnhancedAgentCard(agent);
-            grid.appendChild(card);
+        Object.values(this.state.agents).forEach((agent) => {
+            const agentCard = this.createAgentCard(agent);
+            agentsGrid.appendChild(agentCard);
         });
-
-        this.updateAgentSelectors();
     }
 
-    createEnhancedAgentCard(agent) {
+    createAgentCard(agent) {
         const card = document.createElement("div");
         card.className = `agent-card ${agent.status} ${
             agent.is_active ? "active" : "inactive"
         }`;
         card.dataset.agentId = agent.id;
 
-        const statusText = {
-            idle: "Ready",
-            working: "Working",
-            completed: "Completed",
-            error: "Error",
-            reviewing: "Reviewing",
+        const statusColors = {
+            idle: "bg-gray-500",
+            working: "bg-yellow-500",
+            completed: "bg-green-500",
+            error: "bg-red-500",
+            reviewing: "bg-blue-500",
         };
 
         const performanceScore = this.calculatePerformanceScore(agent);
         const lastActivity = this.getRelativeTime(agent.last_activity);
 
         card.innerHTML = `
-            <div class="agent-card-header">
+            <div class="agent-header">
                 <div class="agent-info">
-                    <h3 class="agent-card-title">${agent.name}</h3>
-                    <span class="agent-card-type ${agent.type}">${
-            agent.type
-        }</span>
+                    <h3 class="agent-name">${agent.name}</h3>
+                    <span class="agent-role">${agent.role}</span>
                 </div>
-                <div class="agent-status-indicator">
-                    <span class="status-dot ${agent.status}"></span>
-                    <span class="status-text">${
-                        statusText[agent.status] || "Unknown"
-                    }</span>
+                <div class="agent-status">
+                    <div class="status-indicator ${agent.status}">
+                        <span class="status-dot"></span>
+                        <span class="status-text">${this.formatStatus(
+                            agent.status
+                        )}</span>
+                    </div>
                 </div>
             </div>
-            <div class="agent-card-content">
-                <div class="agent-card-role">${agent.role}</div>
-                <div class="agent-card-specialty">${agent.specialty}</div>
+            
+            <div class="agent-content">
+                <div class="agent-specialty">
+                    <p>${agent.specialty}</p>
+                </div>
                 
                 <div class="agent-metrics">
-                    <div class="metric">
-                        <span class="metric-label">Tasks Completed</span>
+                    <div class="metric-item">
+                        <span class="metric-label">Tasks</span>
                         <span class="metric-value">${
-                            agent.performance_metrics?.tasks_completed || 0
+                            agent.performance_metrics.tasks_completed
                         }</span>
                     </div>
-                    <div class="metric">
-                        <span class="metric-label">Performance Score</span>
+                    <div class="metric-item">
+                        <span class="metric-label">Score</span>
                         <span class="metric-value">${performanceScore}%</span>
                     </div>
-                    <div class="metric">
-                        <span class="metric-label">Last Activity</span>
+                    <div class="metric-item">
+                        <span class="metric-label">Last Active</span>
                         <span class="metric-value">${lastActivity}</span>
                     </div>
                 </div>
-
+                
                 <div class="agent-skills">
-                    ${(agent.skills || [])
+                    ${agent.skills
                         .map(
                             (skill) => `<span class="skill-tag">${skill}</span>`
                         )
                         .join("")}
                 </div>
-
-                <div class="agent-card-actions">
-                    <button class="btn btn-outline btn-sm" onclick="app.showAgentDetails('${
+                
+                <div class="agent-actions">
+                    <button class="btn btn-sm btn-outline" onclick="app.showAgentDetails('${
                         agent.id
                     }')">
-                        <i class="fas fa-eye"></i> Details
+                        <i class="fas fa-info-circle"></i>
+                        Details
                     </button>
-                    <button class="btn btn-outline btn-sm" onclick="app.assignTaskToAgent('${
+                    <button class="btn btn-sm btn-outline" onclick="app.toggleAgent('${
                         agent.id
                     }')">
-                        <i class="fas fa-tasks"></i> Assign Task
-                    </button>
-                    <button class="btn btn-outline btn-sm" onclick="app.toggleAgentStatus('${
-                        agent.id
-                    }')">
-                        <i class="fas fa-power-off"></i> ${
-                            agent.is_active ? "Pause" : "Resume"
-                        }
+                        <i class="fas fa-power-off"></i>
+                        ${agent.is_active ? "Pause" : "Resume"}
                     </button>
                 </div>
             </div>
@@ -334,27 +442,27 @@ class EnhancedMultiAgentApp {
         return card;
     }
 
-    updateMessagesView() {
+    updateMessagesDisplay() {
         const messagesList = document.getElementById("messages-list");
         if (!messagesList) return;
 
         messagesList.innerHTML = "";
 
-        this.messages.slice(-50).forEach((message, index) => {
-            const messageItem = this.createEnhancedMessageItem(message, index);
+        this.state.messages.slice(0, 50).forEach((message, index) => {
+            const messageItem = this.createMessageItem(message);
             messagesList.appendChild(messageItem);
         });
 
+        // Auto-scroll to bottom
         messagesList.scrollTop = messagesList.scrollHeight;
     }
 
-    createEnhancedMessageItem(message, index) {
+    createMessageItem(message) {
         const item = document.createElement("div");
         item.className = `message-item ${message.type}`;
-        item.dataset.messageId = index;
 
-        const fromAgent = this.agents[message.from_agent_id];
-        const toAgent = this.agents[message.to_agent_id];
+        const fromAgent = this.state.agents[message.from_agent_id];
+        const toAgent = this.state.agents[message.to_agent_id];
         const timestamp = new Date(message.timestamp);
 
         item.innerHTML = `
@@ -363,33 +471,21 @@ class EnhancedMultiAgentApp {
                     <span class="message-from">${
                         fromAgent ? fromAgent.name : "System"
                     }</span>
-                    <i class="fas fa-arrow-right"></i>
-                    <span class="message-to">${
-                        toAgent ? toAgent.name : "System"
-                    }</span>
+                    ${
+                        toAgent
+                            ? `<i class="fas fa-arrow-right"></i><span class="message-to">${toAgent.name}</span>`
+                            : ""
+                    }
                 </div>
                 <div class="message-meta">
-                    <span class="message-type">${message.type}</span>
-                    <span class="message-timestamp">${timestamp.toLocaleTimeString()}</span>
+                    <span class="message-type">${this.formatMessageType(
+                        message.type
+                    )}</span>
+                    <span class="message-time">${timestamp.toLocaleTimeString()}</span>
                 </div>
             </div>
             <div class="message-content">
-                <div class="message-text">${this.formatMessageContent(
-                    message.content
-                )}</div>
-                ${
-                    message.type === "code_update"
-                        ? this.createCodePreview(message.content)
-                        : ""
-                }
-            </div>
-            <div class="message-actions">
-                <button class="btn-icon" onclick="app.copyMessage(${index})">
-                    <i class="fas fa-copy"></i>
-                </button>
-                <button class="btn-icon" onclick="app.bookmarkMessage(${index})">
-                    <i class="fas fa-bookmark"></i>
-                </button>
+                <p>${this.formatMessageContent(message.content)}</p>
             </div>
         `;
 
@@ -402,44 +498,118 @@ class EnhancedMultiAgentApp {
             if (element) element.textContent = value;
         };
 
-        updateElement("tasks-pending", this.taskQueue.pending);
-        updateElement("tasks-in-progress", this.taskQueue.in_progress);
-        updateElement("tasks-completed", this.taskQueue.completed);
-        updateElement("tasks-failed", this.taskQueue.failed);
+        updateElement("tasks-pending", this.state.taskQueue.pending);
+        updateElement("tasks-in-progress", this.state.taskQueue.in_progress);
+        updateElement("tasks-completed", this.state.taskQueue.completed);
+        updateElement("tasks-failed", this.state.taskQueue.failed);
 
-        // Update progress bar
-        const total =
-            this.taskQueue.pending +
-            this.taskQueue.in_progress +
-            this.taskQueue.completed +
-            this.taskQueue.failed;
+        // Update progress calculation
+        const total = Object.values(this.state.taskQueue).reduce(
+            (sum, count) => sum + count,
+            0
+        );
         if (total > 0) {
-            const progress = (this.taskQueue.completed / total) * 100;
+            const progress = (this.state.taskQueue.completed / total) * 100;
             this.updateProgressBar(progress);
         }
     }
 
-    updateProgressBar(percentage) {
-        const progressBar = document.querySelector("#project-progress");
-        const progressFill = document.querySelector(".progress-fill");
-        const progressText = document.querySelector(".progress-text");
+    updateMetricsDisplay() {
+        const metrics = this.state.metrics;
+        if (!metrics) return;
 
-        if (progressBar && progressFill && progressText) {
-            progressBar.classList.remove("hidden");
-            progressFill.style.width = `${percentage}%`;
-            progressText.textContent = `Project Progress: ${Math.round(
-                percentage
-            )}%`;
+        const updateElement = (id, value) => {
+            const element = document.getElementById(id);
+            if (element) element.textContent = value;
+        };
+
+        updateElement("active-agents-count", metrics.active_agents || 0);
+        updateElement("tasks-completed", metrics.tasks_processed || 0);
+        updateElement("messages-sent", metrics.messages_sent || 0);
+        updateElement(
+            "system-uptime",
+            this.formatDuration(metrics.uptime || 0)
+        );
+        updateElement("files-created", metrics.files_created || 0);
+        updateElement("api-calls", metrics.api_calls || 0);
+
+        // Update header metrics
+        updateElement("header-active-agents", metrics.active_agents || 0);
+        updateElement("header-tasks-completed", metrics.tasks_processed || 0);
+        updateElement(
+            "header-system-uptime",
+            this.formatDuration(metrics.uptime || 0)
+        );
+    }
+
+    updateProjectStatus() {
+        const statusElement = document.getElementById("project-status");
+        if (!statusElement) return;
+
+        const statusIndicator =
+            statusElement.querySelector(".status-indicator");
+        const statusText = statusIndicator.querySelector("span:last-child");
+        const statusDot = statusIndicator.querySelector(".status-dot");
+
+        if (this.state.systemRunning) {
+            statusDot.className = "status-dot working";
+            statusText.textContent = "Running";
+        } else {
+            statusDot.className = "status-dot idle";
+            statusText.textContent = "Idle";
         }
     }
 
+    updateProgressBar(percentage) {
+        const progressBar = document.querySelector(".progress-bar");
+        if (progressBar) {
+            progressBar.style.width = `${percentage}%`;
+        }
+    }
+
+    updateConnectionStatus(connected) {
+        const statusElement = document.getElementById("connection-status");
+        if (statusElement) {
+            const dot = statusElement.querySelector(".status-dot");
+            const text = statusElement.querySelector("span:last-child");
+
+            if (connected) {
+                dot.className = "status-dot connected";
+                text.textContent = "Connected";
+            } else {
+                dot.className = "status-dot disconnected";
+                text.textContent = "Disconnected";
+            }
+        }
+    }
+
+    updateProjectControls() {
+        const startBtn = document.getElementById("start-project");
+        const stopBtn = document.getElementById("stop-project");
+        const pauseBtn = document.getElementById("pause-project");
+
+        if (startBtn) startBtn.disabled = this.state.systemRunning;
+        if (stopBtn) stopBtn.disabled = !this.state.systemRunning;
+        if (pauseBtn) pauseBtn.disabled = !this.state.systemRunning;
+    }
+
+    // User Actions
     async startProject() {
         const description = document
             .getElementById("project-description")
             .value.trim();
+
         if (!description) {
             this.showNotification(
                 "Please enter a project description",
+                "warning"
+            );
+            return;
+        }
+
+        if (description.length < 10) {
+            this.showNotification(
+                "Project description must be at least 10 characters",
                 "warning"
             );
             return;
@@ -458,16 +628,11 @@ class EnhancedMultiAgentApp {
 
             const data = await response.json();
 
-            if (response.ok) {
-                this.currentProject = data.project;
-                this.systemRunning = true;
-                this.updateSystemStatus("Starting...", "working");
-                this.showNotification(
-                    "Project started successfully",
-                    "success"
-                );
-                this.updateProjectControls(true);
-                this.startProjectMonitoring();
+            if (data.success) {
+                this.showNotification(data.message, "success");
+                this.state.currentProject = data.project;
+                this.state.systemRunning = true;
+                this.updateProjectControls();
             } else {
                 this.showNotification(
                     data.error || "Failed to start project",
@@ -475,8 +640,8 @@ class EnhancedMultiAgentApp {
                 );
             }
         } catch (error) {
-            console.error("Failed to start project:", error);
-            this.showNotification("Failed to start project", "error");
+            console.error("Error starting project:", error);
+            this.showNotification("Network error. Please try again.", "error");
         } finally {
             this.hideLoading();
         }
@@ -492,336 +657,128 @@ class EnhancedMultiAgentApp {
                 method: "POST",
             });
 
+            const data = await response.json();
+
+            if (data.success) {
+                this.showNotification(data.message, "info");
+                this.state.systemRunning = false;
+                this.updateProjectControls();
+            } else {
+                this.showNotification(
+                    data.error || "Failed to stop project",
+                    "error"
+                );
+            }
+        } catch (error) {
+            console.error("Error stopping project:", error);
+            this.showNotification("Network error. Please try again.", "error");
+        }
+    }
+
+    async downloadProject() {
+        try {
+            const response = await fetch("/api/project/download");
+
             if (response.ok) {
-                this.systemRunning = false;
-                this.updateSystemStatus("Stopped", "idle");
-                this.showNotification("Project stopped", "info");
-                this.updateProjectControls(false);
-                this.stopProjectMonitoring();
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `project_${
+                    new Date().toISOString().split("T")[0]
+                }.zip`;
+                a.click();
+                window.URL.revokeObjectURL(url);
+
+                this.showNotification(
+                    "Project downloaded successfully",
+                    "success"
+                );
+            } else {
+                const data = await response.json();
+                this.showNotification(
+                    data.error || "Failed to download project",
+                    "error"
+                );
             }
         } catch (error) {
-            console.error("Failed to stop project:", error);
-            this.showNotification("Failed to stop project", "error");
+            console.error("Error downloading project:", error);
+            this.showNotification("Network error. Please try again.", "error");
         }
     }
 
-    async pauseProject() {
-        try {
-            const response = await fetch("/api/project/pause", {
-                method: "POST",
-            });
-
-            if (response.ok) {
-                this.showNotification("Project paused", "info");
-                this.updateSystemStatus("Paused", "warning");
-            }
-        } catch (error) {
-            console.error("Failed to pause project:", error);
-            this.showNotification("Failed to pause project", "error");
-        }
-    }
-
-    updateProjectControls(running) {
-        const startBtn = document.getElementById("start-project");
-        const stopBtn = document.getElementById("stop-project");
-        const pauseBtn = document.getElementById("pause-project");
-
-        if (startBtn) startBtn.disabled = running;
-        if (stopBtn) stopBtn.disabled = !running;
-        if (pauseBtn) pauseBtn.disabled = !running;
-    }
-
-    startProjectMonitoring() {
-        this.projectMonitoringInterval = setInterval(() => {
-            this.checkProjectStatus();
-        }, 5000);
-    }
-
-    stopProjectMonitoring() {
-        if (this.projectMonitoringInterval) {
-            clearInterval(this.projectMonitoringInterval);
-            this.projectMonitoringInterval = null;
-        }
-    }
-
-    async checkProjectStatus() {
-        try {
-            const response = await fetch("/api/project/status");
-            const data = await response.json();
-
-            if (data.completed) {
-                this.handleProjectCompletion(data);
-            }
-        } catch (error) {
-            console.error("Failed to check project status:", error);
-        }
-    }
-
-    handleProjectCompletion(data) {
-        this.showNotification("🎉 Project completed successfully!", "success");
-        this.updateSystemStatus("Completed", "success");
-        this.updateProgressBar(100);
-        this.stopProjectMonitoring();
-
-        // Auto-download project files
-        if (data.auto_download) {
-            setTimeout(() => {
-                window.location.href = "/api/project/download";
-            }, 2000);
-        }
-    }
-
-    async showPerformanceReport() {
-        try {
-            const response = await fetch("/api/performance");
-            const data = await response.json();
-
-            const modal = document.getElementById("performance-modal");
-            const content = document.getElementById("performance-content");
-
-            content.innerHTML = `
-                <div class="performance-report">
-                    <div class="performance-section">
-                        <h4>System Performance</h4>
-                        <div class="metrics-grid">
-                            <div class="metric-card">
-                                <div class="metric-title">Uptime</div>
-                                <div class="metric-value">${this.formatDuration(
-                                    data.uptime
-                                )}</div>
-                            </div>
-                            <div class="metric-card">
-                                <div class="metric-title">API Calls</div>
-                                <div class="metric-value">${
-                                    data.metrics.api_calls
-                                }</div>
-                            </div>
-                            <div class="metric-card">
-                                <div class="metric-title">Cache Hit Rate</div>
-                                <div class="metric-value">${(
-                                    data.cache_hit_rate * 100
-                                ).toFixed(1)}%</div>
-                            </div>
-                            <div class="metric-card">
-                                <div class="metric-title">Error Rate</div>
-                                <div class="metric-value">${(
-                                    data.error_rate * 100
-                                ).toFixed(1)}%</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="performance-section">
-                        <h4>Response Times</h4>
-                        <div class="chart-container">
-                            <div class="metric-bar">
-                                <span>Avg Response Time</span>
-                                <div class="bar">
-                                    <div class="bar-fill" style="width: ${Math.min(
-                                        (data.metrics.avg_response_time / 5) *
-                                            100,
-                                        100
-                                    )}%"></div>
-                                </div>
-                                <span>${data.metrics.avg_response_time.toFixed(
-                                    2
-                                )}s</span>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="performance-section">
-                        <h4>Agent Performance</h4>
-                        <div class="agent-performance-list">
-                            ${Object.values(this.agents)
-                                .map(
-                                    (agent) => `
-                                <div class="agent-performance-item">
-                                    <span class="agent-name">${
-                                        agent.name
-                                    }</span>
-                                    <span class="agent-tasks">${
-                                        agent.performance_metrics
-                                            ?.tasks_completed || 0
-                                    } tasks</span>
-                                    <span class="agent-score">${this.calculatePerformanceScore(
-                                        agent
-                                    )}%</span>
-                                </div>
-                            `
-                                )
-                                .join("")}
-                        </div>
-                    </div>
-                </div>
-            `;
-
-            modal.classList.add("active");
-        } catch (error) {
-            console.error("Failed to load performance report:", error);
-            this.showNotification("Failed to load performance report", "error");
-        }
-    }
-
-    async showCodePreview() {
-        try {
-            const response = await fetch("/api/project/files");
-            const data = await response.json();
-
-            const modal = document.getElementById("code-preview-modal");
-            const content = document.getElementById("code-preview-content");
-
-            content.innerHTML = `
-                <div class="code-preview">
-                    <div class="file-explorer">
-                        <h4>Project Files</h4>
-                        <div class="file-tree">
-                            ${this.renderFileTree(data.tree)}
-                        </div>
-                    </div>
-                    <div class="code-editor">
-                        <div class="editor-header">
-                            <span id="current-file">Select a file to preview</span>
-                        </div>
-                        <div class="editor-content">
-                            <pre id="code-content">Select a file from the tree to view its contents</pre>
-                        </div>
-                    </div>
-                </div>
-            `;
-
-            modal.classList.add("active");
-        } catch (error) {
-            console.error("Failed to load code preview:", error);
-            this.showNotification("Failed to load code preview", "error");
-        }
-    }
-
-    renderFileTree(tree, path = "") {
-        return tree
-            .map((item) => {
-                if (item.type === "folder") {
-                    return `
-                    <div class="file-item folder" data-path="${path}${item.name}">
-                        <i class="fas fa-folder"></i>
-                        <span>${item.name}</span>
-                    </div>
-                `;
-                } else {
-                    return `
-                    <div class="file-item file" data-path="${path}${
-                        item.name
-                    }" onclick="app.previewFile('${path}${item.name}')">
-                        <i class="fas fa-file-code"></i>
-                        <span>${item.name}</span>
-                        <small class="file-size">${this.formatFileSize(
-                            item.size
-                        )}</small>
-                    </div>
-                `;
-                }
-            })
-            .join("");
-    }
-
-    async previewFile(filePath) {
-        try {
-            const response = await fetch(
-                `/api/project/file?path=${encodeURIComponent(filePath)}`
-            );
-            const data = await response.json();
-
-            document.getElementById("current-file").textContent = filePath;
-            document.getElementById("code-content").textContent = data.content;
-
-            // Apply syntax highlighting if possible
-            if (window.hljs) {
-                hljs.highlightAll();
-            }
-        } catch (error) {
-            console.error("Failed to preview file:", error);
-            this.showNotification("Failed to preview file", "error");
-        }
-    }
-
-    startMetricsPolling() {
-        this.updateMetrics();
-        this.metricsInterval = setInterval(() => {
-            this.updateMetrics();
-        }, 2000);
-    }
-
-    async updateMetrics() {
-        try {
-            const response = await fetch("/api/metrics");
-            const data = await response.json();
-
-            this.updateElement("active-agents-count", data.active_agents);
-            this.updateElement("tasks-completed", data.tasks_completed);
-            this.updateElement("messages-sent", data.messages_sent);
-            this.updateElement(
-                "system-uptime",
-                this.formatDuration(data.system_uptime)
-            );
-            this.updateElement("files-created", data.files_created);
-
-            // Update task queue metrics
-            this.taskQueue = {
-                pending: data.tasks_pending,
-                in_progress: data.tasks_in_progress,
-                completed: data.tasks_completed,
-                failed: data.tasks_failed,
-            };
-
-            this.updateTaskQueueDisplay();
-        } catch (error) {
-            // Silently handle metrics errors
-        }
-    }
-
-    showNotification(message, type = "info", duration = 5000) {
-        const notification = document.createElement("div");
-        notification.className = `notification ${type}`;
-        notification.innerHTML = `
-            <div class="notification-content">
-                <i class="fas fa-${this.getNotificationIcon(type)}"></i>
-                <span>${message}</span>
-            </div>
-            <button class="notification-close" onclick="this.parentElement.remove()">
-                <i class="fas fa-times"></i>
-            </button>
-        `;
-
-        const container = document.getElementById("notification-container");
-        container.appendChild(notification);
-
-        // Auto-remove notification
-        setTimeout(() => {
-            if (notification.parentElement) {
-                notification.remove();
-            }
-        }, duration);
-    }
-
-    getNotificationIcon(type) {
-        const icons = {
-            success: "check-circle",
-            error: "exclamation-triangle",
-            warning: "exclamation-circle",
-            info: "info-circle",
+    loadTemplate(templateName) {
+        const templates = {
+            "web-app":
+                "Create a modern web application with React frontend and Flask backend. Include user authentication, responsive design, and a dashboard with real-time updates.",
+            api: "Build a RESTful API with Flask, including user authentication, CRUD operations, input validation, error handling, and comprehensive API documentation.",
+            dashboard:
+                "Create an analytics dashboard with interactive charts, real-time data updates, user management, and export functionality using React and Chart.js.",
+            mobile: "Build a cross-platform mobile application using React Native with navigation, state management, offline support, and push notifications.",
         };
-        return icons[type] || "info-circle";
+
+        const description = templates[templateName];
+        if (description) {
+            document.getElementById("project-description").value = description;
+            this.showNotification(`Template loaded: ${templateName}`, "info");
+        }
     }
 
-    // Utility methods
+    refreshDashboard() {
+        this.showLoading("Refreshing dashboard...");
+
+        setTimeout(() => {
+            this.loadInitialData();
+            this.hideLoading();
+            this.showNotification("Dashboard refreshed", "success");
+        }, 1000);
+    }
+
+    switchView(viewName) {
+        // Hide all views
+        document.querySelectorAll(".view").forEach((view) => {
+            view.classList.remove("active");
+        });
+
+        // Show target view
+        const targetView = document.getElementById(`${viewName}-view`);
+        if (targetView) {
+            targetView.classList.add("active");
+        }
+
+        // Update active tab
+        document.querySelectorAll(".nav-tab").forEach((tab) => {
+            tab.classList.remove("active");
+        });
+
+        const activeTab = document.querySelector(`[data-view="${viewName}"]`);
+        if (activeTab) {
+            activeTab.classList.add("active");
+        }
+
+        this.state.currentView = viewName;
+
+        // Load view-specific data
+        switch (viewName) {
+            case "performance":
+                this.loadPerformanceData();
+                break;
+            case "files":
+                this.loadProjectFiles();
+                break;
+            case "logs":
+                this.loadSystemLogs();
+                break;
+        }
+    }
+
+    // Utility functions
     calculatePerformanceScore(agent) {
         const metrics = agent.performance_metrics || {};
-        const tasksCompleted = metrics.tasks_completed || 0;
-        const baseScore = Math.min(tasksCompleted * 10, 70);
-        const qualityScore = metrics.code_quality_score || 0;
-        const collaborationScore = metrics.collaboration_score || 0;
+        const baseScore = Math.min(metrics.tasks_completed * 10, 70);
+        const qualityScore = metrics.quality_score || 85;
 
-        return Math.min(baseScore + qualityScore + collaborationScore, 100);
+        return Math.min(baseScore + (qualityScore - 75), 100);
     }
 
     getRelativeTime(timestamp) {
@@ -841,7 +798,7 @@ class EnhancedMultiAgentApp {
         const secs = seconds % 60;
 
         if (hours > 0) {
-            return `${hours}h ${minutes}m ${secs}s`;
+            return `${hours}h ${minutes}m`;
         } else if (minutes > 0) {
             return `${minutes}m ${secs}s`;
         } else {
@@ -849,37 +806,352 @@ class EnhancedMultiAgentApp {
         }
     }
 
-    formatFileSize(bytes) {
-        if (bytes === 0) return "0 B";
+    formatStatus(status) {
+        const statusMap = {
+            idle: "Idle",
+            working: "Working",
+            completed: "Completed",
+            error: "Error",
+            reviewing: "Reviewing",
+        };
+        return statusMap[status] || status;
+    }
 
-        const k = 1024;
-        const sizes = ["B", "KB", "MB", "GB"];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+    formatMessageType(type) {
+        const typeMap = {
+            task_assignment: "Task Assignment",
+            task_completion: "Task Completed",
+            status_update: "Status Update",
+            communication: "Communication",
+            error: "Error",
+        };
+        return typeMap[type] || type;
     }
 
     formatMessageContent(content) {
-        // Format code blocks
-        content = content.replace(
-            /```(\w+)?\n([\s\S]*?)```/g,
-            (match, lang, code) => {
-                return `<pre class="code-block ${lang || ""}">${this.escapeHtml(
-                    code
-                )}</pre>`;
-            }
-        );
-
-        // Format inline code
-        content = content.replace(/`([^`]+)`/g, "<code>$1</code>");
-
-        // Format URLs
-        content = content.replace(
-            /(https?:\/\/[^\s]+)/g,
-            '<a href="$1" target="_blank">$1</a>'
-        );
-
+        // Truncate long messages
+        if (content.length > 200) {
+            return content.substring(0, 200) + "...";
+        }
         return content;
+    }
+
+    getAgentName(agentId) {
+        const agent = this.state.agents[agentId];
+        return agent ? agent.name : "Unknown";
+    }
+
+    showNotification(message, type = "info", duration = 5000) {
+        const notification = document.createElement("div");
+        notification.className = `notification ${type}`;
+        notification.innerHTML = `
+            <div class="notification-content">
+                <i class="fas fa-${this.getNotificationIcon(type)}"></i>
+                <span>${message}</span>
+            </div>
+            <button class="notification-close" onclick="this.parentElement.remove()">
+                <i class="fas fa-times"></i>
+            </button>
+        `;
+
+        const container = document.getElementById("notification-container");
+        container.appendChild(notification);
+
+        if (duration > 0) {
+            setTimeout(() => {
+                if (notification.parentElement) {
+                    notification.remove();
+                }
+            }, duration);
+        }
+    }
+
+    getNotificationIcon(type) {
+        const icons = {
+            success: "check-circle",
+            error: "exclamation-triangle",
+            warning: "exclamation-circle",
+            info: "info-circle",
+        };
+        return icons[type] || "info-circle";
+    }
+
+    showLoading(message = "Loading...") {
+        const overlay = document.getElementById("loading-overlay");
+        if (overlay) {
+            const text = overlay.querySelector("p");
+            if (text) text.textContent = message;
+            overlay.classList.add("active");
+        }
+    }
+
+    hideLoading() {
+        const overlay = document.getElementById("loading-overlay");
+        if (overlay) {
+            overlay.classList.remove("active");
+        }
+    }
+
+    closeAllModals() {
+        document.querySelectorAll(".modal").forEach((modal) => {
+            modal.classList.remove("active");
+        });
+    }
+
+    // Stub methods for features to be implemented
+    pauseProject() {
+        this.showNotification("Pause feature coming soon", "info");
+    }
+
+    showAgentDetails(agentId) {
+        const agent = this.state.agents[agentId];
+        if (agent) {
+            console.log("Agent details:", agent);
+            this.showNotification(`Agent details: ${agent.name}`, "info");
+        }
+    }
+
+    toggleAgent(agentId) {
+        const agent = this.state.agents[agentId];
+        if (agent) {
+            const action = agent.is_active ? "paused" : "resumed";
+            this.showNotification(`Agent ${agent.name} ${action}`, "info");
+        }
+    }
+
+    exportLogs() {
+        this.showNotification("Export logs feature coming soon", "info");
+    }
+
+    showPerformanceReport() {
+        this.showNotification("Performance report feature coming soon", "info");
+    }
+
+    loadPerformanceData() {
+        console.log("Loading performance data...");
+    }
+
+    async loadProjectFiles() {
+        try {
+            const response = await fetch("/api/project/files/list");
+            const data = await response.json();
+
+            if (data.success) {
+                this.updateFilesDisplay(data.files);
+            } else {
+                this.showNotification("Failed to load project files", "error");
+            }
+        } catch (error) {
+            console.error("Error loading project files:", error);
+            this.showNotification("Error loading project files", "error");
+        }
+    }
+
+    updateFilesDisplay(files) {
+        const filesContainer = document.getElementById("files-container");
+        if (!filesContainer) return;
+
+        if (files.length === 0) {
+            filesContainer.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-folder-open"></i>
+                    <h3>No files created yet</h3>
+                    <p>Files will appear here as the project progresses.</p>
+                </div>
+            `;
+            return;
+        }
+
+        // Group files by type
+        const filesByType = {};
+        files.forEach((file) => {
+            if (!filesByType[file.type]) {
+                filesByType[file.type] = [];
+            }
+            filesByType[file.type].push(file);
+        });
+
+        let html = '<div class="files-grid">';
+
+        Object.entries(filesByType).forEach(([type, typeFiles]) => {
+            html += `
+                <div class="file-type-section">
+                    <h3 class="file-type-header">
+                        <i class="fas fa-${this.getFileTypeIcon(type)}"></i>
+                        ${this.getFileTypeName(type)} (${typeFiles.length})
+                    </h3>
+                    <div class="file-list">
+            `;
+
+            typeFiles.forEach((file) => {
+                html += this.createFileItem(file);
+            });
+
+            html += "</div></div>";
+        });
+
+        html += "</div>";
+        filesContainer.innerHTML = html;
+    }
+
+    createFileItem(file) {
+        const size = this.formatFileSize(file.size);
+        const icon = this.getFileTypeIcon(file.type);
+
+        return `
+            <div class="file-item" onclick="app.viewFile('${file.name}')">
+                <div class="file-icon">
+                    <i class="fas fa-${icon}"></i>
+                </div>
+                <div class="file-info">
+                    <div class="file-name">${file.name}</div>
+                    <div class="file-meta">
+                        <span class="file-size">${size}</span>
+                        <span class="file-lines">${file.lines} lines</span>
+                    </div>
+                </div>
+                <div class="file-actions">
+                    <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); app.downloadFile('${file.name}')">
+                        <i class="fas fa-download"></i>
+                    </button>
+                </div>
+            </div>
+        `;
+    }
+
+    getFileTypeIcon(type) {
+        const icons = {
+            python: "code",
+            javascript: "code",
+            html: "file-code",
+            css: "file-code",
+            json: "file-code",
+            yaml: "file-code",
+            markdown: "file-alt",
+            text: "file-alt",
+            docker: "cube",
+            shell: "terminal",
+            other: "file",
+        };
+        return icons[type] || "file";
+    }
+
+    getFileTypeName(type) {
+        const names = {
+            python: "Python Files",
+            javascript: "JavaScript Files",
+            html: "HTML Files",
+            css: "CSS Files",
+            json: "JSON Files",
+            yaml: "YAML Files",
+            markdown: "Markdown Files",
+            text: "Text Files",
+            docker: "Docker Files",
+            shell: "Shell Scripts",
+            other: "Other Files",
+        };
+        return names[type] || "Other Files";
+    }
+
+    formatFileSize(bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+        return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+    }
+
+    async viewFile(filename) {
+        try {
+            const response = await fetch(
+                `/api/project/files/${encodeURIComponent(filename)}`
+            );
+            const data = await response.json();
+
+            if (data.success) {
+                this.showFileModal(data);
+            } else {
+                this.showNotification("Failed to load file content", "error");
+            }
+        } catch (error) {
+            console.error("Error viewing file:", error);
+            this.showNotification("Error viewing file", "error");
+        }
+    }
+
+    showFileModal(fileData) {
+        const modal = document.createElement("div");
+        modal.className = "modal active";
+        modal.innerHTML = `
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>
+                        <i class="fas fa-${this.getFileTypeIcon(
+                            fileData.type
+                        )}"></i>
+                        ${fileData.filename}
+                    </h3>
+                    <button class="modal-close" onclick="this.closest('.modal').remove()">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <div class="file-stats">
+                        <span class="stat">
+                            <i class="fas fa-file"></i>
+                            ${this.formatFileSize(fileData.size)}
+                        </span>
+                        <span class="stat">
+                            <i class="fas fa-list"></i>
+                            ${fileData.lines} lines
+                        </span>
+                        <span class="stat">
+                            <i class="fas fa-code"></i>
+                            ${fileData.type}
+                        </span>
+                    </div>
+                    <div class="code-viewer">
+                        <pre><code class="language-${this.getCodeLanguage(
+                            fileData.type
+                        )}">${this.escapeHtml(fileData.content)}</code></pre>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-primary" onclick="app.downloadFile('${
+                        fileData.filename
+                    }')">
+                        <i class="fas fa-download"></i>
+                        Download File
+                    </button>
+                    <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">
+                        Close
+                    </button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+
+        // Highlight syntax if available
+        if (window.hljs) {
+            modal.querySelectorAll("pre code").forEach((block) => {
+                hljs.highlightElement(block);
+            });
+        }
+    }
+
+    getCodeLanguage(type) {
+        const languages = {
+            python: "python",
+            javascript: "javascript",
+            html: "html",
+            css: "css",
+            json: "json",
+            yaml: "yaml",
+            markdown: "markdown",
+            text: "text",
+            docker: "dockerfile",
+            shell: "bash",
+        };
+        return languages[type] || "text";
     }
 
     escapeHtml(text) {
@@ -888,378 +1160,100 @@ class EnhancedMultiAgentApp {
         return div.innerHTML;
     }
 
-    updateElement(id, value) {
-        const element = document.getElementById(id);
-        if (element) {
-            element.textContent = value;
-        }
-    }
-
-    debounce(func, wait) {
-        let timeout;
-        return function executedFunction(...args) {
-            const later = () => {
-                clearTimeout(timeout);
-                func(...args);
-            };
-            clearTimeout(timeout);
-            timeout = setTimeout(later, wait);
-        };
-    }
-
-    switchView(viewName) {
-        document.querySelectorAll(".view").forEach((view) => {
-            view.classList.remove("active");
-            view.style.display = "none";
-        });
-
-        const activeView = document.getElementById(`${viewName}-view`);
-        if (activeView) {
-            activeView.classList.add("active");
-            activeView.style.display = "";
-        }
-
-        // Load view-specific data
-        switch (viewName) {
-            case "communications":
-                this.loadDetailedLog();
-                break;
-            case "files":
-                this.loadFileTree();
-                break;
-            case "performance":
-                this.showPerformanceReport();
-                break;
-        }
-    }
-
-    updateActiveTab(activeTab) {
-        document.querySelectorAll(".nav-tab").forEach((tab) => {
-            tab.classList.remove("active");
-        });
-        activeTab.classList.add("active");
-    }
-
-    showLoading(message = "Loading...") {
-        const overlay = document.getElementById("loading-overlay");
-        const text = overlay.querySelector("p");
-        if (text) text.textContent = message;
-        overlay.classList.add("active");
-    }
-
-    hideLoading() {
-        document.getElementById("loading-overlay").classList.remove("active");
-    }
-
-    closeModal() {
-        document.querySelectorAll(".modal").forEach((modal) => {
-            modal.classList.remove("active");
-        });
-    }
-
-    updateSystemStatus(status, type) {
-        const statusBtn = document.getElementById("system-status");
-        if (!statusBtn) return;
-
-        const icons = {
-            success: "fas fa-check-circle",
-            working: "fas fa-spinner fa-spin",
-            error: "fas fa-exclamation-triangle",
-            idle: "fas fa-pause-circle",
-            warning: "fas fa-exclamation-circle",
-        };
-
-        const colors = {
-            success: "btn-success",
-            working: "btn-warning",
-            error: "btn-danger",
-            idle: "btn-secondary",
-            warning: "btn-warning",
-        };
-
-        statusBtn.className = `btn ${colors[type] || "btn-secondary"}`;
-        statusBtn.innerHTML = `<i class="${
-            icons[type] || "fas fa-question-circle"
-        }"></i> ${status}`;
-    }
-
-    // Export functionality
-    async exportLogs() {
+    async downloadFile(filename) {
         try {
-            const response = await fetch("/api/log");
+            const response = await fetch(
+                `/api/project/files/${encodeURIComponent(filename)}`
+            );
             const data = await response.json();
 
-            const blob = new Blob([JSON.stringify(data, null, 2)], {
-                type: "application/json",
-            });
+            if (data.success) {
+                const blob = new Blob([data.content], { type: "text/plain" });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = filename;
+                a.click();
+                window.URL.revokeObjectURL(url);
 
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `system-logs-${
-                new Date().toISOString().split("T")[0]
-            }.json`;
-            a.click();
-            URL.revokeObjectURL(url);
-
-            this.showNotification("Logs exported successfully", "success");
-        } catch (error) {
-            console.error("Failed to export logs:", error);
-            this.showNotification("Failed to export logs", "error");
-        }
-    }
-
-    // Placeholder methods for enhanced features
-    async loadDetailedLog() {
-        // Implementation similar to original but with enhanced formatting
-        const logDiv = document.getElementById("detailed-log");
-        if (!logDiv) return;
-
-        logDiv.innerHTML =
-            '<div class="log-loading">Loading enhanced log...</div>';
-
-        try {
-            const response = await fetch("/api/log");
-            const data = await response.json();
-
-            logDiv.innerHTML = "";
-
-            data.log.forEach((entry) => {
-                const line = document.createElement("div");
-                line.className = `log-entry ${entry.event}`;
-                line.innerHTML = `
-                    <span class="log-timestamp">[${new Date(
-                        entry.timestamp
-                    ).toLocaleTimeString()}]</span>
-                    <span class="log-event">${entry.event}</span>
-                    <span class="log-description">${entry.description}</span>
-                `;
-                logDiv.appendChild(line);
-            });
-
-            logDiv.scrollTop = logDiv.scrollHeight;
-        } catch (error) {
-            logDiv.innerHTML =
-                '<div class="log-error">Error loading log.</div>';
-        }
-    }
-
-    async loadFileTree() {
-        const container = document.getElementById("file-tree-container");
-        if (!container) return;
-
-        container.innerHTML = '<div class="loading">Loading file tree...</div>';
-
-        try {
-            const response = await fetch("/api/project/files");
-            const data = await response.json();
-
-            container.innerHTML = this.renderFileTree(data.tree);
-        } catch (error) {
-            container.innerHTML =
-                '<div class="error">Error loading file tree.</div>';
-        }
-    }
-
-    // Additional methods for enhanced functionality
-    toggleRealTimeUpdates() {
-        this.realTimeUpdates = !this.realTimeUpdates;
-        const btn = document.getElementById("toggle-realtime");
-        if (btn) {
-            btn.textContent = this.realTimeUpdates
-                ? "Disable Real-time"
-                : "Enable Real-time";
-        }
-        this.showNotification(
-            `Real-time updates ${
-                this.realTimeUpdates ? "enabled" : "disabled"
-            }`,
-            "info"
-        );
-    }
-
-    async assignTaskToAgent(agentId) {
-        const task = prompt("Enter task description:");
-        if (!task) return;
-
-        try {
-            const response = await fetch(`/api/agents/${agentId}/assign_task`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ task }),
-            });
-
-            if (response.ok) {
-                this.showNotification("Task assigned successfully", "success");
+                this.showNotification(`Downloaded ${filename}`, "success");
             } else {
-                this.showNotification("Failed to assign task", "error");
+                this.showNotification("Failed to download file", "error");
             }
         } catch (error) {
-            console.error("Failed to assign task:", error);
-            this.showNotification("Failed to assign task", "error");
+            console.error("Error downloading file:", error);
+            this.showNotification("Error downloading file", "error");
         }
     }
 
-    async toggleAgentStatus(agentId) {
-        const agent = this.agents[agentId];
-        if (!agent) return;
-
-        const action = agent.is_active ? "deactivate" : "activate";
-
-        try {
-            const response = await fetch(`/api/agents/${agentId}/${action}`, {
-                method: "POST",
-            });
-
-            if (response.ok) {
-                this.showNotification(
-                    `Agent ${action}d successfully`,
-                    "success"
-                );
-                this.loadAgents(); // Refresh agent data
-            } else {
-                this.showNotification(`Failed to ${action} agent`, "error");
-            }
-        } catch (error) {
-            console.error(`Failed to ${action} agent:`, error);
-            this.showNotification(`Failed to ${action} agent`, "error");
-        }
+    loadSystemLogs() {
+        console.log("Loading system logs...");
     }
 
-    showAgentDetails(agentId) {
-        const agent = this.agents[agentId];
-        if (!agent) return;
+    filterAgents(searchTerm, filterType) {
+        console.log("Filtering agents:", searchTerm, filterType);
+    }
 
-        const modal = document.getElementById("agent-details-modal");
-        const title = document.getElementById("agent-details-title");
-        const content = document.getElementById("agent-details-content");
+    filterMessages(messageType) {
+        console.log("Filtering messages:", messageType);
+    }
 
-        title.innerHTML = `<i class="fas fa-user"></i> ${agent.name}`;
-
-        content.innerHTML = `
-            <div class="agent-details-enhanced">
-                <div class="details-grid">
-                    <div class="detail-section">
-                        <h4><i class="fas fa-user-tag"></i> Basic Information</h4>
-                        <div class="detail-items">
-                            <div class="detail-item">
-                                <span class="detail-label">Name:</span>
-                                <span class="detail-value">${agent.name}</span>
-                            </div>
-                            <div class="detail-item">
-                                <span class="detail-label">Role:</span>
-                                <span class="detail-value">${agent.role}</span>
-                            </div>
-                            <div class="detail-item">
-                                <span class="detail-label">Type:</span>
-                                <span class="detail-value">${agent.type}</span>
-                            </div>
-                            <div class="detail-item">
-                                <span class="detail-label">Status:</span>
-                                <span class="detail-value status-${
-                                    agent.status
-                                }">${agent.status}</span>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="detail-section">
-                        <h4><i class="fas fa-chart-line"></i> Performance</h4>
-                        <div class="performance-meters">
-                            <div class="meter">
-                                <span class="meter-label">Overall Score</span>
-                                <div class="meter-bar">
-                                    <div class="meter-fill" style="width: ${this.calculatePerformanceScore(
-                                        agent
-                                    )}%"></div>
-                                </div>
-                                <span class="meter-value">${this.calculatePerformanceScore(
-                                    agent
-                                )}%</span>
-                            </div>
-                            <div class="meter">
-                                <span class="meter-label">Tasks Completed</span>
-                                <div class="meter-bar">
-                                    <div class="meter-fill" style="width: ${Math.min(
-                                        (agent.performance_metrics
-                                            ?.tasks_completed || 0) * 10,
-                                        100
-                                    )}%"></div>
-                                </div>
-                                <span class="meter-value">${
-                                    agent.performance_metrics
-                                        ?.tasks_completed || 0
-                                }</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="detail-section full-width">
-                    <h4><i class="fas fa-brain"></i> Specialty & Skills</h4>
-                    <p class="specialty-text">${agent.specialty}</p>
-                    <div class="skills-list">
-                        ${(agent.skills || [])
-                            .map(
-                                (skill) =>
-                                    `<span class="skill-tag">${skill}</span>`
-                            )
-                            .join("")}
-                    </div>
-                </div>
-                
-                <div class="detail-section full-width">
-                    <h4><i class="fas fa-code"></i> Recent Work Output</h4>
-                    <div class="work-output-container">
-                        <pre class="work-output">${
-                            agent.work_output || "No output yet"
-                        }</pre>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        modal.classList.add("active");
+    // Cleanup
+    destroy() {
+        if (this.updateInterval) {
+            clearInterval(this.updateInterval);
+        }
+        if (this.socket) {
+            this.socket.disconnect();
+        }
     }
 }
 
-// Initialize the enhanced app
+// Initialize app
 let app;
 
 document.addEventListener("DOMContentLoaded", () => {
     app = new EnhancedMultiAgentApp();
 
-    // Global helper functions
-    window.createAgent = () => app.createAgent();
-    window.closeModal = () => app.closeModal();
+    // Global app reference
     window.app = app;
 
     console.log("🚀 Enhanced Multi-Agent System initialized");
 });
 
-// Enhanced error handling
+// Error handling
 window.addEventListener("error", (e) => {
     console.error("Application error:", e.error);
     if (app) {
         app.hideLoading();
         app.showNotification(
-            "An error occurred. Check console for details.",
+            "An error occurred. Please check the console.",
             "error"
         );
     }
 });
 
-// Enhanced offline/online handling
+// Handle online/offline events
 window.addEventListener("online", () => {
     if (app) {
         app.showNotification("Connection restored", "success");
-        app.socket.connect();
     }
 });
 
 window.addEventListener("offline", () => {
     if (app) {
         app.showNotification("Connection lost", "warning");
-        app.updateSystemStatus("Offline", "error");
+    }
+});
+
+// Handle page visibility
+document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+        console.log("Page hidden");
+    } else {
+        console.log("Page visible");
+        if (app && app.connected) {
+            app.refreshDashboard();
+        }
     }
 });

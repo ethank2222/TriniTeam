@@ -13,8 +13,11 @@
             content="AI, multi-agent, development, automation, collaboration"
         />
 
-        <!-- Enhanced Stylesheets -->
-        <link rel="stylesheet" href="../static/css/style.css" />
+        <!-- Enhanced Stylesheets - FIXED PATHS -->
+        <link
+            rel="stylesheet"
+            href="{{ url_for('static', filename='css/style.css') }}"
+        />
         <link
             href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
             rel="stylesheet"
@@ -1223,14 +1226,14 @@
         <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
-        <script src="../static/js/app.js"></script>
+        <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 
         <!-- Service Worker Registration -->
         <script>
             if ("serviceWorker" in navigator) {
                 window.addEventListener("load", function () {
                     navigator.serviceWorker
-                        .register("/static/sw.js")
+                        .register("{{ url_for('static', filename='sw.js') }}")
                         .then(function (registration) {
                             console.log("SW registered: ", registration);
                         })

@@ -141,15 +141,6 @@ class EnhancedMultiAgentApp {
             });
         }
 
-        // Auto-save project description
-        const projectDesc = document.getElementById("project-description");
-        if (projectDesc) {
-            projectDesc.addEventListener(
-                "input",
-                this.debounce(() => this.saveProjectDescription(), 1000)
-            );
-        }
-
         // Modal controls
         document.querySelectorAll(".modal-close").forEach((btn) => {
             btn.addEventListener("click", () => {
